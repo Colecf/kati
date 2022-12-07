@@ -21,6 +21,8 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <iostream>
+#include <boost/stacktrace.hpp>
 
 #include <string_view>
 
@@ -354,7 +356,17 @@ static void HandleRealpath(int argc, char** argv) {
   }
 }
 
+void handler(int sig) {
+  std::cerr << boost::stacktrace::stacktrace();
+  std::abort();
+}
+
 int main(int argc, char* argv[]) {
+  std::set_terminate([](){
+    std::cerr << boost::stacktrace::stacktrace();
+    std::abort();
+  });
+  signal(SIGSEGV, handler);
   if (argc >= 2) {
     if (!strcmp(argv[1], "--realpath")) {
       HandleRealpath(argc - 2, argv + 2);

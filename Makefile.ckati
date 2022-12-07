@@ -69,13 +69,13 @@ KATI_CXX_TEST_OBJS := $(patsubst $(KATI_SRC_PATH)/%.cc,$(KATI_INTERMEDIATES_PATH
 KATI_CXX_TEST_EXES := $(patsubst $(KATI_INTERMEDIATES_PATH)/%.o,$(KATI_BIN_PATH)/%,\
 	$(KATI_CXX_TEST_OBJS))
 
-KATI_CXXFLAGS := -g -W -Wall -MMD -MP
+KATI_CXXFLAGS := -g -rdynamic -W -Wall -MMD -MP -DBOOST_STACKTRACE_USE_ADDR2LINE -no-pie -fno-pie
 KATI_CXXFLAGS += -O -DNOLOG
 KATI_CXXFLAGS += -march=native
 #KATI_CXXFLAGS += -pg
 
 ifeq ($(shell uname),Linux)
-KATI_LIBS := -lrt -lpthread
+KATI_LIBS := -lrt -lpthread -ldl
 endif
 
 # Rule to build ckati into KATI_BIN_PATH
