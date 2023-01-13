@@ -117,7 +117,7 @@ class SimpleVar : public Var {
 
   virtual bool IsFunc(Evaluator* ev) const override;
 
-  virtual void Eval(Evaluator* ev, std::string* s) const override;
+  virtual void Eval(Evaluator* ev, StringBuilder* s) const override;
 
   virtual void AppendVar(Evaluator* ev, Value* v) override;
 
@@ -125,7 +125,7 @@ class SimpleVar : public Var {
 
   virtual std::string DebugString() const override;
 
-  std::string v_;
+  StringBuilder v_;
 };
 
 class RecursiveVar : public Var {
@@ -140,7 +140,7 @@ class RecursiveVar : public Var {
 
   virtual bool IsFunc(Evaluator* ev) const override;
 
-  virtual void Eval(Evaluator* ev, std::string* s) const override;
+  virtual void Eval(Evaluator* ev, StringBuilder* s) const override;
 
   virtual void AppendVar(Evaluator* ev, Value* v) override;
 
@@ -163,7 +163,7 @@ class UndefinedVar : public Var {
 
   virtual bool IsFunc(Evaluator* ev) const override;
 
-  virtual void Eval(Evaluator* ev, std::string* s) const override;
+  virtual void Eval(Evaluator* ev, StringBuilder* s) const override;
 
   virtual std::string_view String() const override;
 
@@ -180,7 +180,7 @@ class VariableNamesVar : public Var {
 
   virtual bool IsFunc(Evaluator* ev) const override;
 
-  virtual void Eval(Evaluator* ev, std::string* s) const override;
+  virtual void Eval(Evaluator* ev, StringBuilder* s) const override;
 
   virtual std::string_view String() const override;
 
@@ -190,7 +190,7 @@ class VariableNamesVar : public Var {
   std::string_view name_;
   bool all_;
 
-  void ConcatVariableNames(Evaluator* ev, std::string* s) const;
+  void ConcatVariableNames(Evaluator* ev, StringBuilder* s) const;
 };
 
 // The built-in .SHELLSTATUS variable
@@ -205,7 +205,7 @@ class ShellStatusVar : public Var {
 
   virtual bool IsFunc(Evaluator* ev) const override;
 
-  virtual void Eval(Evaluator* ev, std::string* s) const override;
+  virtual void Eval(Evaluator* ev, StringBuilder* s) const override;
 
   virtual std::string_view String() const override;
 

@@ -20,12 +20,13 @@
 #include <vector>
 
 #include "loc.h"
+#include "strutil.h"
 
 class Evaluator;
 
 class Evaluable {
  public:
-  virtual void Eval(Evaluator* ev, std::string* s) const = 0;
+  virtual void Eval(Evaluator* ev, StringBuilder* s) const = 0;
   std::string Eval(Evaluator*) const;
   const Loc& Location() const { return loc_; }
   // Whether this Evaluable is either knowably a function (e.g. one of the

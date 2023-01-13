@@ -60,7 +60,7 @@ class AutoVar : public Var {
    public:                                                            \
     name(CommandEvaluator* ce, const char* sym) : AutoVar(ce, sym) {} \
     virtual ~name() = default;                                        \
-    virtual void Eval(Evaluator* ev, std::string* s) const override;  \
+    virtual void Eval(Evaluator* ev, StringBuilder* s) const override;  \
   }
 
 DECLARE_AUTO_VAR_CLASS(AutoAtVar);
@@ -76,7 +76,7 @@ class AutoSuffixDVar : public AutoVar {
   AutoSuffixDVar(CommandEvaluator* ce, const char* sym, Var* wrapped)
       : AutoVar(ce, sym), wrapped_(wrapped) {}
   virtual ~AutoSuffixDVar() = default;
-  virtual void Eval(Evaluator* ev, std::string* s) const override;
+  virtual void Eval(Evaluator* ev, StringBuilder* s) const override;
 
  private:
   Var* wrapped_;
@@ -87,23 +87,23 @@ class AutoSuffixFVar : public AutoVar {
   AutoSuffixFVar(CommandEvaluator* ce, const char* sym, Var* wrapped)
       : AutoVar(ce, sym), wrapped_(wrapped) {}
   virtual ~AutoSuffixFVar() = default;
-  virtual void Eval(Evaluator* ev, std::string* s) const override;
+  virtual void Eval(Evaluator* ev, StringBuilder* s) const override;
 
  private:
   Var* wrapped_;
 };
 
-void AutoAtVar::Eval(Evaluator*, std::string* s) const {
+void AutoAtVar::Eval(Evaluator*, StringBuilder* s) const {
   *s += ce_->current_dep_node()->output.str();
 }
 
-void AutoLessVar::Eval(Evaluator*, std::string* s) const {
+void AutoLessVar::Eval(Evaluator*, StringBuilder* s) const {
   auto& ai = ce_->current_dep_node()->actual_inputs;
   if (!ai.empty())
     *s += ai[0].str();
 }
 
-void AutoHatVar::Eval(Evaluator*, std::string* s) const {
+void AutoHatVar::Eval(Evaluator*, StringBuilder* s) const {
   std::unordered_set<std::string_view> seen;
   WordWriter ww(s);
   for (Symbol ai : ce_->current_dep_node()->actual_inputs) {
@@ -112,14 +112,14 @@ void AutoHatVar::Eval(Evaluator*, std::string* s) const {
   }
 }
 
-void AutoPlusVar::Eval(Evaluator*, std::string* s) const {
+void AutoPlusVar::Eval(Evaluator*, StringBuilder* s) const {
   WordWriter ww(s);
   for (Symbol ai : ce_->current_dep_node()->actual_inputs) {
     ww.Write(ai.str());
   }
 }
 
-void AutoStarVar::Eval(Evaluator*, std::string* s) const {
+void AutoStarVar::Eval(Evaluator*, StringBuilder* s) const {
   const DepNode* n = ce_->current_dep_node();
   if (!n->output_pattern.IsValid())
     return;
@@ -127,7 +127,7 @@ void AutoStarVar::Eval(Evaluator*, std::string* s) const {
   s->append(pat.Stem(n->output.str()));
 }
 
-void AutoQuestionVar::Eval(Evaluator* ev, std::string* s) const {
+void AutoQuestionVar::Eval(Evaluator* ev, StringBuilder* s) const {
   std::unordered_set<std::string_view> seen;
 
   if (ev->avoid_io()) {
@@ -163,24 +163,24 @@ void AutoQuestionVar::Eval(Evaluator* ev, std::string* s) const {
   }
 }
 
-void AutoNotImplementedVar::Eval(Evaluator* ev, std::string*) const {
+void AutoNotImplementedVar::Eval(Evaluator* ev, StringBuilder*) const {
   ev->Error(StringPrintf("Automatic variable `$%s' isn't supported yet", sym_));
 }
 
-void AutoSuffixDVar::Eval(Evaluator* ev, std::string* s) const {
-  std::string buf;
+void AutoSuffixDVar::Eval(Evaluator* ev, StringBuilder* s) const {
+  StringBuilder buf;
   wrapped_->Eval(ev, &buf);
   WordWriter ww(s);
-  for (std::string_view tok : WordScanner(buf)) {
+  for (std::string_view tok : WordScanner(buf.str())) {
     ww.Write(Dirname(tok));
   }
 }
 
-void AutoSuffixFVar::Eval(Evaluator* ev, std::string* s) const {
-  std::string buf;
+void AutoSuffixFVar::Eval(Evaluator* ev, StringBuilder* s) const {
+  StringBuilder buf;
   wrapped_->Eval(ev, &buf);
   WordWriter ww(s);
-  for (std::string_view tok : WordScanner(buf)) {
+  for (std::string_view tok : WordScanner(buf.str())) {
     ww.Write(Basename(tok));
   }
 }

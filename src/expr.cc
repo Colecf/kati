@@ -30,9 +30,9 @@ Evaluable::Evaluable(const Loc& loc) : loc_(loc) {}
 Evaluable::~Evaluable() {}
 
 std::string Evaluable::Eval(Evaluator* ev) const {
-  std::string s;
+  StringBuilder s;
   Eval(ev, &s);
-  return s;
+  return s.str();
 }
 
 Value::Value(const Loc& loc) : Evaluable(loc) {}
@@ -51,9 +51,9 @@ class Literal : public Value {
 
   virtual bool IsFunc(Evaluator*) const override { return false; }
 
-  virtual void Eval(Evaluator* ev, std::string* s) const override {
+  virtual void Eval(Evaluator* ev, StringBuilder* s) const override {
     ev->CheckStack();
-    s->append(s_.begin(), s_.end());
+    s->append(s_);
   }
 
   virtual bool IsLiteral() const override { return true; }
@@ -102,7 +102,7 @@ class ValueList : public Value {
     return false;
   }
 
-  virtual void Eval(Evaluator* ev, std::string* s) const override {
+  virtual void Eval(Evaluator* ev, StringBuilder* s) const override {
     ev->CheckStack();
     for (Value* v : vals_) {
       v->Eval(ev, s);
@@ -141,7 +141,7 @@ class SymRef : public Value {
     return IsInteger(name_.str());
   }
 
-  virtual void Eval(Evaluator* ev, std::string* s) const override {
+  virtual void Eval(Evaluator* ev, StringBuilder* s) const override {
     ev->CheckStack();
     Var* v = ev->LookupVarForEval(name_);
     v->Used(ev, name_);
@@ -167,7 +167,7 @@ class VarRef : public Value {
     return true;
   }
 
-  virtual void Eval(Evaluator* ev, std::string* s) const override {
+  virtual void Eval(Evaluator* ev, StringBuilder* s) const override {
     ev->CheckStack();
     ev->IncrementEvalDepth();
     const std::string&& name = name_->Eval(ev);
@@ -201,7 +201,7 @@ class VarSubst : public Value {
     return name_->IsFunc(ev) || pat_->IsFunc(ev) || subst_->IsFunc(ev);
   }
 
-  virtual void Eval(Evaluator* ev, std::string* s) const override {
+  virtual void Eval(Evaluator* ev, StringBuilder* s) const override {
     ev->CheckStack();
     ev->IncrementEvalDepth();
     const std::string&& name = name_->Eval(ev);
@@ -243,7 +243,7 @@ class Func : public Value {
 
   virtual bool IsFunc(Evaluator*) const override { return true; }
 
-  virtual void Eval(Evaluator* ev, std::string* s) const override {
+  virtual void Eval(Evaluator* ev, StringBuilder* s) const override {
     ScopedFrame frame(ev->Enter(FrameType::FUNCALL, fi_->name, Location()));
     ev->CheckStack();
     LOG("Invoke func %s(%s)", name(), JoinValues(args_, ",").c_str());

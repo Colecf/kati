@@ -100,7 +100,7 @@ void StripShellComment(std::string* cmd) {
 
 void PatsubstFunc(const std::vector<Value*>& args,
                   Evaluator* ev,
-                  std::string* s) {
+                  StringBuilder* s) {
   const std::string&& pat_str = args[0]->Eval(ev);
   const std::string&& repl = args[1]->Eval(ev);
   const std::string&& str = args[2]->Eval(ev);
@@ -112,7 +112,7 @@ void PatsubstFunc(const std::vector<Value*>& args,
   }
 }
 
-void StripFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
+void StripFunc(const std::vector<Value*>& args, Evaluator* ev, StringBuilder* s) {
   const std::string&& str = args[0]->Eval(ev);
   WordWriter ww(s);
   for (std::string_view tok : WordScanner(str)) {
@@ -120,7 +120,7 @@ void StripFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
   }
 }
 
-void SubstFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
+void SubstFunc(const std::vector<Value*>& args, Evaluator* ev, StringBuilder* s) {
   const std::string&& pat = args[0]->Eval(ev);
   const std::string&& repl = args[1]->Eval(ev);
   const std::string&& str = args[2]->Eval(ev);
@@ -143,7 +143,7 @@ void SubstFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
 
 void FindstringFunc(const std::vector<Value*>& args,
                     Evaluator* ev,
-                    std::string* s) {
+                    StringBuilder* s) {
   const std::string&& find = args[0]->Eval(ev);
   const std::string&& in = args[1]->Eval(ev);
   if (in.find(find) != std::string::npos)
@@ -152,7 +152,7 @@ void FindstringFunc(const std::vector<Value*>& args,
 
 void FilterFunc(const std::vector<Value*>& args,
                 Evaluator* ev,
-                std::string* s) {
+                StringBuilder* s) {
   const std::string&& pat_buf = args[0]->Eval(ev);
   const std::string&& text = args[1]->Eval(ev);
   std::vector<Pattern> pats;
@@ -172,7 +172,7 @@ void FilterFunc(const std::vector<Value*>& args,
 
 void FilterOutFunc(const std::vector<Value*>& args,
                    Evaluator* ev,
-                   std::string* s) {
+                   StringBuilder* s) {
   const std::string&& pat_buf = args[0]->Eval(ev);
   const std::string&& text = args[1]->Eval(ev);
   std::vector<Pattern> pats;
@@ -193,14 +193,14 @@ void FilterOutFunc(const std::vector<Value*>& args,
   }
 }
 
-void SortFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
-  std::string list;
+void SortFunc(const std::vector<Value*>& args, Evaluator* ev, StringBuilder* s) {
+  StringBuilder list;
   args[0]->Eval(ev, &list);
   COLLECT_STATS("func sort time");
   // TODO(hamaji): Probably we could use a faster string-specific sort
   // algorithm.
   std::vector<std::string_view> toks;
-  WordScanner(list).Split(&toks);
+  WordScanner(list.str()).Split(&toks);
   stable_sort(toks.begin(), toks.end());
   WordWriter ww(s);
   std::string_view prev;
@@ -222,7 +222,7 @@ static int GetNumericValueForFunc(const std::string& buf) {
   return n;
 }
 
-void WordFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
+void WordFunc(const std::vector<Value*>& args, Evaluator* ev, StringBuilder* s) {
   const std::string&& n_str = args[0]->Eval(ev);
   int n = GetNumericValueForFunc(n_str);
   if (n < 0) {
@@ -246,7 +246,7 @@ void WordFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
 
 void WordlistFunc(const std::vector<Value*>& args,
                   Evaluator* ev,
-                  std::string* s) {
+                  StringBuilder* s) {
   const std::string&& s_str = args[0]->Eval(ev);
   int si = GetNumericValueForFunc(s_str);
   if (si < 0) {
@@ -279,7 +279,7 @@ void WordlistFunc(const std::vector<Value*>& args,
   }
 }
 
-void WordsFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
+void WordsFunc(const std::vector<Value*>& args, Evaluator* ev, StringBuilder* s) {
   const std::string&& text = args[0]->Eval(ev);
   WordScanner ws(text);
   int n = 0;
@@ -292,7 +292,7 @@ void WordsFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
 
 void FirstwordFunc(const std::vector<Value*>& args,
                    Evaluator* ev,
-                   std::string* s) {
+                   StringBuilder* s) {
   const std::string&& text = args[0]->Eval(ev);
   WordScanner ws(text);
   auto begin = ws.begin();
@@ -303,7 +303,7 @@ void FirstwordFunc(const std::vector<Value*>& args,
 
 void LastwordFunc(const std::vector<Value*>& args,
                   Evaluator* ev,
-                  std::string* s) {
+                  StringBuilder* s) {
   const std::string&& text = args[0]->Eval(ev);
   std::string_view last;
   for (std::string_view tok : WordScanner(text)) {
@@ -312,7 +312,7 @@ void LastwordFunc(const std::vector<Value*>& args,
   s->append(last);
 }
 
-void JoinFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
+void JoinFunc(const std::vector<Value*>& args, Evaluator* ev, StringBuilder* s) {
   const std::string&& list1 = args[0]->Eval(ev);
   const std::string&& list2 = args[1]->Eval(ev);
   WordScanner ws1(list1);
@@ -333,7 +333,7 @@ void JoinFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
 
 void WildcardFunc(const std::vector<Value*>& args,
                   Evaluator* ev,
-                  std::string* s) {
+                  StringBuilder* s) {
   const std::string&& pat = args[0]->Eval(ev);
   COLLECT_STATS("func wildcard time");
   // Note GNU make does not delay the execution of $(wildcard) so we
@@ -348,7 +348,7 @@ void WildcardFunc(const std::vector<Value*>& args,
   }
 }
 
-void DirFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
+void DirFunc(const std::vector<Value*>& args, Evaluator* ev, StringBuilder* s) {
   const std::string&& text = args[0]->Eval(ev);
   WordWriter ww(s);
   for (std::string_view tok : WordScanner(text)) {
@@ -359,7 +359,7 @@ void DirFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
 
 void NotdirFunc(const std::vector<Value*>& args,
                 Evaluator* ev,
-                std::string* s) {
+                StringBuilder* s) {
   const std::string&& text = args[0]->Eval(ev);
   WordWriter ww(s);
   for (std::string_view tok : WordScanner(text)) {
@@ -373,7 +373,7 @@ void NotdirFunc(const std::vector<Value*>& args,
 
 void SuffixFunc(const std::vector<Value*>& args,
                 Evaluator* ev,
-                std::string* s) {
+                StringBuilder* s) {
   const std::string&& text = args[0]->Eval(ev);
   WordWriter ww(s);
   for (std::string_view tok : WordScanner(text)) {
@@ -385,7 +385,7 @@ void SuffixFunc(const std::vector<Value*>& args,
 
 void BasenameFunc(const std::vector<Value*>& args,
                   Evaluator* ev,
-                  std::string* s) {
+                  StringBuilder* s) {
   const std::string&& text = args[0]->Eval(ev);
   WordWriter ww(s);
   for (std::string_view tok : WordScanner(text)) {
@@ -395,7 +395,7 @@ void BasenameFunc(const std::vector<Value*>& args,
 
 void AddsuffixFunc(const std::vector<Value*>& args,
                    Evaluator* ev,
-                   std::string* s) {
+                   StringBuilder* s) {
   const std::string&& suf = args[0]->Eval(ev);
   const std::string&& text = args[1]->Eval(ev);
   WordWriter ww(s);
@@ -407,7 +407,7 @@ void AddsuffixFunc(const std::vector<Value*>& args,
 
 void AddprefixFunc(const std::vector<Value*>& args,
                    Evaluator* ev,
-                   std::string* s) {
+                   StringBuilder* s) {
   const std::string&& pre = args[0]->Eval(ev);
   const std::string&& text = args[1]->Eval(ev);
   WordWriter ww(s);
@@ -419,7 +419,7 @@ void AddprefixFunc(const std::vector<Value*>& args,
 
 void RealpathFunc(const std::vector<Value*>& args,
                   Evaluator* ev,
-                  std::string* s) {
+                  StringBuilder* s) {
   const std::string&& text = args[0]->Eval(ev);
   if (ev->avoid_io()) {
     *s += "$(";
@@ -441,7 +441,7 @@ void RealpathFunc(const std::vector<Value*>& args,
 
 void AbspathFunc(const std::vector<Value*>& args,
                  Evaluator* ev,
-                 std::string* s) {
+                 StringBuilder* s) {
   const std::string&& text = args[0]->Eval(ev);
   WordWriter ww(s);
   std::string buf;
@@ -451,7 +451,7 @@ void AbspathFunc(const std::vector<Value*>& args,
   }
 }
 
-void IfFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
+void IfFunc(const std::vector<Value*>& args, Evaluator* ev, StringBuilder* s) {
   const std::string&& cond = args[0]->Eval(ev);
   if (cond.empty()) {
     if (args.size() > 2)
@@ -461,7 +461,7 @@ void IfFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
   }
 }
 
-void AndFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
+void AndFunc(const std::vector<Value*>& args, Evaluator* ev, StringBuilder* s) {
   std::string cond;
   for (Value* a : args) {
     cond = a->Eval(ev);
@@ -473,7 +473,7 @@ void AndFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
   }
 }
 
-void OrFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
+void OrFunc(const std::vector<Value*>& args, Evaluator* ev, StringBuilder* s) {
   for (Value* a : args) {
     const std::string&& cond = a->Eval(ev);
     if (!cond.empty()) {
@@ -483,18 +483,19 @@ void OrFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
   }
 }
 
-void ValueFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
+void ValueFunc(const std::vector<Value*>& args, Evaluator* ev, StringBuilder* s) {
   const std::string&& var_name = args[0]->Eval(ev);
   Var* var = ev->LookupVar(Intern(var_name));
   s->append(std::string(var->String()));
 }
 
-void EvalFunc(const std::vector<Value*>& args, Evaluator* ev, std::string*) {
+void EvalFunc(const std::vector<Value*>& args, Evaluator* ev, StringBuilder*) {
   // TODO: eval leaks everything... for now.
   // const string text = args[0]->Eval(ev);
   ev->CheckStack();
-  std::string* text = new std::string;
-  args[0]->Eval(ev, text);
+  StringBuilder textBuilder;
+  args[0]->Eval(ev, &textBuilder);
+  std::string* text = new std::string(textBuilder.str());
   if (ev->avoid_io()) {
     KATI_WARN_LOC(ev->loc(),
                   "*warning*: $(eval) in a recipe is not recommended: %s",
@@ -592,7 +593,7 @@ bool ShouldStoreCommandResult(std::string_view cmd) {
   return true;
 }
 
-void ShellFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
+void ShellFunc(const std::vector<Value*>& args, Evaluator* ev, StringBuilder* s) {
   std::string cmd = args[0]->Eval(ev);
   if (ev->avoid_io() && !HasNoIoInShellScript(cmd)) {
     if (ev->eval_depth() > 1) {
@@ -629,7 +630,7 @@ void ShellFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
   ShellStatusVar::SetValue(returnCode);
 }
 
-void CallFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
+void CallFunc(const std::vector<Value*>& args, Evaluator* ev, StringBuilder* s) {
   static const Symbol tmpvar_names[] = {
       Intern("0"), Intern("1"), Intern("2"), Intern("3"), Intern("4"),
       Intern("5"), Intern("6"), Intern("7"), Intern("8"), Intern("9")};
@@ -685,7 +686,7 @@ void CallFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
 
 void ForeachFunc(const std::vector<Value*>& args,
                  Evaluator* ev,
-                 std::string* s) {
+                 StringBuilder* s) {
   const std::string&& varname = args[0]->Eval(ev);
   const std::string&& list = args[1]->Eval(ev);
   ev->DecrementEvalDepth();
@@ -702,7 +703,7 @@ void ForeachFunc(const std::vector<Value*>& args,
 
 void OriginFunc(const std::vector<Value*>& args,
                 Evaluator* ev,
-                std::string* s) {
+                StringBuilder* s) {
   const std::string&& var_name = args[0]->Eval(ev);
   Var* var = ev->LookupVar(Intern(var_name));
   *s += GetOriginStr(var->Origin());
@@ -710,13 +711,13 @@ void OriginFunc(const std::vector<Value*>& args,
 
 void FlavorFunc(const std::vector<Value*>& args,
                 Evaluator* ev,
-                std::string* s) {
+                StringBuilder* s) {
   const std::string&& var_name = args[0]->Eval(ev);
   Var* var = ev->LookupVar(Intern(var_name));
   *s += var->Flavor();
 }
 
-void InfoFunc(const std::vector<Value*>& args, Evaluator* ev, std::string*) {
+void InfoFunc(const std::vector<Value*>& args, Evaluator* ev, StringBuilder*) {
   const std::string&& a = args[0]->Eval(ev);
   if (ev->avoid_io()) {
     ev->add_delayed_output_command(
@@ -727,7 +728,7 @@ void InfoFunc(const std::vector<Value*>& args, Evaluator* ev, std::string*) {
   fflush(stdout);
 }
 
-void WarningFunc(const std::vector<Value*>& args, Evaluator* ev, std::string*) {
+void WarningFunc(const std::vector<Value*>& args, Evaluator* ev, StringBuilder*) {
   const std::string&& a = args[0]->Eval(ev);
   if (ev->avoid_io()) {
     ev->add_delayed_output_command(StringPrintf(
@@ -737,7 +738,7 @@ void WarningFunc(const std::vector<Value*>& args, Evaluator* ev, std::string*) {
   WARN_LOC(ev->loc(), "%s", a.c_str());
 }
 
-void ErrorFunc(const std::vector<Value*>& args, Evaluator* ev, std::string*) {
+void ErrorFunc(const std::vector<Value*>& args, Evaluator* ev, StringBuilder*) {
   const std::string&& a = args[0]->Eval(ev);
   if (ev->avoid_io()) {
     ev->add_delayed_output_command(
@@ -750,7 +751,7 @@ void ErrorFunc(const std::vector<Value*>& args, Evaluator* ev, std::string*) {
 
 static void FileReadFunc(Evaluator* ev,
                          const std::string& filename,
-                         std::string* s) {
+                         StringBuilder* s) {
   int fd = open(filename.c_str(), O_RDONLY);
   if (fd < 0) {
     if (errno == ENOENT) {
@@ -825,7 +826,7 @@ static void FileWriteFunc(Evaluator* ev,
   }
 }
 
-void FileFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
+void FileFunc(const std::vector<Value*>& args, Evaluator* ev, StringBuilder* s) {
   if (ev->avoid_io()) {
     ev->Error("*** $(file ...) is not supported in rules.");
   }
@@ -877,7 +878,7 @@ void FileFunc(const std::vector<Value*>& args, Evaluator* ev, std::string* s) {
 
 void DeprecatedVarFunc(const std::vector<Value*>& args,
                        Evaluator* ev,
-                       std::string*) {
+                       StringBuilder*) {
   std::string vars_str = args[0]->Eval(ev);
   std::string msg;
 
@@ -915,7 +916,7 @@ void DeprecatedVarFunc(const std::vector<Value*>& args,
 
 void ObsoleteVarFunc(const std::vector<Value*>& args,
                      Evaluator* ev,
-                     std::string*) {
+                     StringBuilder*) {
   std::string vars_str = args[0]->Eval(ev);
   std::string msg;
 
@@ -952,7 +953,7 @@ void ObsoleteVarFunc(const std::vector<Value*>& args,
 
 void DeprecateExportFunc(const std::vector<Value*>& args,
                          Evaluator* ev,
-                         std::string*) {
+                         StringBuilder*) {
   std::string msg = ". " + args[0]->Eval(ev);
 
   if (ev->avoid_io()) {
@@ -970,7 +971,7 @@ void DeprecateExportFunc(const std::vector<Value*>& args,
 
 void ObsoleteExportFunc(const std::vector<Value*>& args,
                         Evaluator* ev,
-                        std::string*) {
+                        StringBuilder*) {
   std::string msg = ". " + args[0]->Eval(ev);
 
   if (ev->avoid_io()) {
@@ -984,7 +985,7 @@ void ObsoleteExportFunc(const std::vector<Value*>& args,
   ev->SetExportObsolete(msg);
 }
 
-void ProfileFunc(const std::vector<Value*>& args, Evaluator* ev, std::string*) {
+void ProfileFunc(const std::vector<Value*>& args, Evaluator* ev, StringBuilder*) {
   for (auto arg : args) {
     std::string files = arg->Eval(ev);
     for (std::string_view file : WordScanner(files)) {
@@ -995,7 +996,7 @@ void ProfileFunc(const std::vector<Value*>& args, Evaluator* ev, std::string*) {
 
 void VariableLocationFunc(const std::vector<Value*>& args,
                           Evaluator* ev,
-                          std::string* s) {
+                          StringBuilder* s) {
   std::string arg = args[0]->Eval(ev);
   WordWriter ww(s);
   for (std::string_view var : WordScanner(arg)) {

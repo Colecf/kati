@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "loc.h"
+#include "strutil.h"
 
 class FindCond;
 

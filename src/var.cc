@@ -111,7 +111,7 @@ SimpleVar::SimpleVar(const std::string& v,
                      VarOrigin origin,
                      Frame* definition,
                      Loc loc)
-    : Var(origin, definition, loc), v_(v) {}
+    : Var(origin, definition, loc), v_(StringBuilder(v)) {}
 
 SimpleVar::SimpleVar(VarOrigin origin,
                      Frame* definition,
@@ -126,25 +126,25 @@ bool SimpleVar::IsFunc(Evaluator*) const {
   return false;
 }
 
-void SimpleVar::Eval(Evaluator* ev, std::string* s) const {
+void SimpleVar::Eval(Evaluator* ev, StringBuilder* s) const {
   ev->CheckStack();
   *s += v_;
 }
 
 void SimpleVar::AppendVar(Evaluator* ev, Value* v) {
-  std::string buf;
-  v->Eval(ev, &buf);
+  StringBuilder temp;
+  v->Eval(ev, &temp);
   v_.push_back(' ');
-  v_ += buf;
+  v_.append(std::move(temp));
   definition_ = ev->CurrentFrame();
 }
 
 std::string_view SimpleVar::String() const {
-  return v_;
+  return v_.str();
 }
 
 std::string SimpleVar::DebugString() const {
-  return v_;
+  return v_.str();
 }
 
 RecursiveVar::RecursiveVar(Value* v,
@@ -158,7 +158,7 @@ bool RecursiveVar::IsFunc(Evaluator* ev) const {
   return v_->IsFunc(ev);
 }
 
-void RecursiveVar::Eval(Evaluator* ev, std::string* s) const {
+void RecursiveVar::Eval(Evaluator* ev, StringBuilder* s) const {
   ev->CheckStack();
   v_->Eval(ev, s);
 }
@@ -196,7 +196,7 @@ bool UndefinedVar::IsFunc(Evaluator*) const {
   return false;
 }
 
-void UndefinedVar::Eval(Evaluator*, std::string*) const {
+void UndefinedVar::Eval(Evaluator*, StringBuilder*) const {
   // Nothing to do.
 }
 
@@ -218,7 +218,7 @@ bool VariableNamesVar::IsFunc(Evaluator*) const {
   return false;
 }
 
-void VariableNamesVar::Eval(Evaluator* ev, std::string* s) const {
+void VariableNamesVar::Eval(Evaluator* ev, StringBuilder* s) const {
   ConcatVariableNames(ev, s);
 }
 
@@ -227,7 +227,7 @@ std::string_view VariableNamesVar::String() const {
 }
 
 void VariableNamesVar::ConcatVariableNames(Evaluator* ev,
-                                           std::string* s) const {
+                                           StringBuilder* s) const {
   WordWriter ww(s);
   std::vector<std::string_view>&& symbols =
       GetSymbolNames([=](Var* var) -> bool {
@@ -275,7 +275,7 @@ bool ShellStatusVar::IsFunc(Evaluator*) const {
   return false;
 }
 
-void ShellStatusVar::Eval(Evaluator* ev, std::string* s) const {
+void ShellStatusVar::Eval(Evaluator* ev, StringBuilder* s) const {
   if (ev->IsEvaluatingCommand()) {
     ev->Error("Kati does not support using .SHELLSTATUS inside of a rule");
   }

@@ -15,9 +15,39 @@
 #ifndef STRUTIL_H_
 #define STRUTIL_H_
 
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
+
+// A class that can efficiently append to a string,
+// and then concatenate all the appends together to one
+// string at the end.
+class StringBuilder {
+public:
+  StringBuilder() = default;
+  explicit StringBuilder(const std::string&);
+  StringBuilder(const StringBuilder&) = delete;
+  StringBuilder(StringBuilder&&) = delete;
+
+  StringBuilder& operator+=(const StringBuilder&);
+  StringBuilder& operator+=(std::string&&);
+  StringBuilder& operator+=(std::string_view);
+  StringBuilder& operator+=(const char*);
+  StringBuilder& operator+=(char);
+  void append(const StringBuilder&);
+  void append(std::string&&);
+  void append(std::string_view);
+  void append(const char*);
+  void push_back(char);
+
+  bool empty() const;
+
+  const std::string& str() const;
+
+private:
+  mutable std::vector<std::shared_ptr<const std::string>> pieces_;
+};
 
 class WordScanner {
  public:
@@ -47,12 +77,14 @@ class WordScanner {
 class WordWriter {
  public:
   explicit WordWriter(std::string* o);
+  explicit WordWriter(StringBuilder* o);
   void MaybeAddWhitespace();
   void Write(std::string_view s);
 
  private:
-  std::string* out_;
-  bool needs_space_;
+  std::string* out_ = nullptr;
+  StringBuilder* out_builder_ = nullptr;
+  bool needs_space_ = false;
 };
 
 // Temporary modifies s[s.size()] to '\0'.
@@ -96,13 +128,48 @@ class Pattern {
 
   std::string_view Stem(std::string_view str) const;
 
+  template<class String>
   void AppendSubst(std::string_view str,
                    std::string_view subst,
-                   std::string* out) const;
+                   String* out) const {
+    if (percent_index_ == std::string::npos) {
+      if (str == pat_) {
+        out->append(subst);
+        return;
+      } else {
+        out->append(str);
+        return;
+      }
+    }
 
+    if (MatchImpl(str)) {
+      size_t subst_percent_index = subst.find('%');
+      if (subst_percent_index == std::string::npos) {
+        out->append(subst);
+        return;
+      } else {
+        out->append(subst.substr(0, subst_percent_index));
+        out->append(str.substr(percent_index_, str.size() - pat_.size() + 1));
+        out->append(subst.substr(subst_percent_index + 1));
+        return;
+      }
+    }
+    out->append(str);
+  }
+
+  template<class String>
   void AppendSubstRef(std::string_view str,
                       std::string_view subst,
-                      std::string* out) const;
+                      String* out) const {
+    if (percent_index_ != std::string::npos &&
+        subst.find('%') != std::string::npos) {
+      AppendSubst(str, subst, out);
+      return;
+    }
+    std::string_view s = TrimSuffix(str, pat_);
+    out->append(s);
+    out->append(subst);
+  }
 
  private:
   bool MatchImpl(std::string_view str) const;

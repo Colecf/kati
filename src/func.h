@@ -24,7 +24,7 @@
 
 struct FuncInfo {
   const char* name;
-  void (*func)(const std::vector<Value*>& args, Evaluator* ev, std::string* s);
+  void (*func)(const std::vector<Value*>& args, Evaluator* ev, StringBuilder* s);
   int arity;
   int min_arity;
   // For all parameters.

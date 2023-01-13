@@ -457,7 +457,9 @@ class NinjaGenerator {
                   std::string* cmd_buf,
                   std::string* depfile) {
     if (node->depfile_var) {
-      node->depfile_var->Eval(ev_, depfile);
+      StringBuilder s;
+      node->depfile_var->Eval(ev_, &s);
+      *depfile = s.str();
       return true;
     }
     if (!g_flags.detect_depfiles)
@@ -589,7 +591,9 @@ class NinjaGenerator {
 
     std::string pool;
     if (node->ninja_pool_var) {
-      node->ninja_pool_var->Eval(ev_, &pool);
+      StringBuilder poolBuilder;
+      node->ninja_pool_var->Eval(ev_, &poolBuilder);
+      pool = poolBuilder.str();
     }
 
     if (pool != "") {

@@ -35,6 +35,96 @@ static int SkipUntil(const char* s, size_t len, const char* delimiters) {
   return std::min(len, strcspn(s, delimiters));
 }
 
+static const auto g_spaceStringPtr = std::make_shared<const std::string>(" ");
+
+StringBuilder::StringBuilder(const std::string& s) {
+  append(s);
+}
+
+StringBuilder& StringBuilder::operator+=(const StringBuilder& s) {
+  append(s);
+  return *this;
+}
+
+StringBuilder& StringBuilder::operator+=(std::string&& s) {
+  append(s);
+  return *this;
+}
+
+StringBuilder& StringBuilder::operator+=(std::string_view s) {
+  append(s);
+  return *this;
+}
+
+StringBuilder& StringBuilder::operator+=(const char* s) {
+  append(s);
+  return *this;
+}
+
+StringBuilder& StringBuilder::operator+=(char c) {
+  push_back(c);
+  return *this;
+}
+
+void StringBuilder::append(const StringBuilder& s) {
+  pieces_.reserve(pieces_.size() + s.pieces_.size());
+  // Saving the size in a separate variable before the loop is
+  // necessary in case &s == this
+  size_t size = s.pieces_.size();
+  for (size_t i = 0; i < size; i++) {
+    pieces_.push_back(s.pieces_[i]);
+  }
+}
+
+void StringBuilder::append(std::string&& s) {
+  pieces_.push_back(std::make_shared<const std::string>(s));
+}
+
+void StringBuilder::append(std::string_view s) {
+  pieces_.push_back(std::make_shared<const std::string>(s));
+}
+
+void StringBuilder::append(const char* s) {
+  pieces_.push_back(std::make_shared<const std::string>(s));
+}
+
+void StringBuilder::push_back(char c) {
+  if (c == ' ') {
+    // Optimization for a single space, which is a common occurance due to
+    // WordWriter and similar functionality.
+    pieces_.push_back(g_spaceStringPtr);
+  } else {
+    pieces_.push_back(std::make_shared<const std::string>(1, c));
+  }
+}
+
+bool StringBuilder::empty() const {
+  for (const auto& s : pieces_) {
+    if (!s->empty()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+const std::string& StringBuilder::str() const {
+  if (pieces_.size() == 1) {
+    return *pieces_[0];
+  }
+  size_t result_size = 0;
+  for (const auto& s : pieces_) {
+    result_size += s->size();
+  }
+  auto result = std::make_shared<std::string>();
+  result->reserve(result_size);
+  for (const auto& s : pieces_) {
+    result->append(*s);
+  }
+  pieces_.clear();
+  pieces_.push_back(result);
+  return *pieces_[0];
+}
+
 WordScanner::Iterator& WordScanner::Iterator::operator++() {
   int len = static_cast<int>(in->size());
   for (s = i + 1; s < len; s++) {
@@ -81,11 +171,16 @@ void WordScanner::Split(std::vector<std::string_view>* o) {
     o->push_back(t);
 }
 
-WordWriter::WordWriter(std::string* o) : out_(o), needs_space_(false) {}
+WordWriter::WordWriter(std::string* o) : out_(o) {}
+WordWriter::WordWriter(StringBuilder* o) : out_builder_(o) {}
 
 void WordWriter::MaybeAddWhitespace() {
   if (needs_space_) {
-    out_->push_back(' ');
+    if (out_) {
+      out_->push_back(' ');
+    } else {
+      out_builder_->push_back(' ');
+    }
   } else {
     needs_space_ = true;
   }
@@ -93,7 +188,11 @@ void WordWriter::MaybeAddWhitespace() {
 
 void WordWriter::Write(std::string_view s) {
   MaybeAddWhitespace();
-  out_->append(s);
+  if (out_) {
+    out_->append(s);
+  } else {
+    out_builder_->append(s);
+  }
 }
 
 ScopedTerminator::ScopedTerminator(std::string_view s)
@@ -161,46 +260,48 @@ std::string_view Pattern::Stem(std::string_view str) const {
   return str.substr(percent_index_, str.size() - pat_.size() + 1);
 }
 
-void Pattern::AppendSubst(std::string_view str,
-                          std::string_view subst,
-                          std::string* out) const {
-  if (percent_index_ == std::string::npos) {
-    if (str == pat_) {
-      out->append(subst);
-      return;
-    } else {
-      out->append(str);
-      return;
-    }
-  }
+// template<class String>
+// void Pattern::AppendSubst(std::string_view str,
+//                           std::string_view subst,
+//                           String* out) const {
+//   if (percent_index_ == std::string::npos) {
+//     if (str == pat_) {
+//       out->append(subst);
+//       return;
+//     } else {
+//       out->append(str);
+//       return;
+//     }
+//   }
 
-  if (MatchImpl(str)) {
-    size_t subst_percent_index = subst.find('%');
-    if (subst_percent_index == std::string::npos) {
-      out->append(subst);
-      return;
-    } else {
-      out->append(subst.substr(0, subst_percent_index));
-      out->append(str.substr(percent_index_, str.size() - pat_.size() + 1));
-      out->append(subst.substr(subst_percent_index + 1));
-      return;
-    }
-  }
-  out->append(str);
-}
+//   if (MatchImpl(str)) {
+//     size_t subst_percent_index = subst.find('%');
+//     if (subst_percent_index == std::string::npos) {
+//       out->append(subst);
+//       return;
+//     } else {
+//       out->append(subst.substr(0, subst_percent_index));
+//       out->append(str.substr(percent_index_, str.size() - pat_.size() + 1));
+//       out->append(subst.substr(subst_percent_index + 1));
+//       return;
+//     }
+//   }
+//   out->append(str);
+// }
 
-void Pattern::AppendSubstRef(std::string_view str,
-                             std::string_view subst,
-                             std::string* out) const {
-  if (percent_index_ != std::string::npos &&
-      subst.find('%') != std::string::npos) {
-    AppendSubst(str, subst, out);
-    return;
-  }
-  std::string_view s = TrimSuffix(str, pat_);
-  out->append(s.begin(), s.end());
-  out->append(subst.begin(), subst.end());
-}
+// template<class String>
+// void Pattern::AppendSubstRef(std::string_view str,
+//                              std::string_view subst,
+//                              String* out) const {
+//   if (percent_index_ != std::string::npos &&
+//       subst.find('%') != std::string::npos) {
+//     AppendSubst(str, subst, out);
+//     return;
+//   }
+//   std::string_view s = TrimSuffix(str, pat_);
+//   out->append(s);
+//   out->append(subst);
+// }
 
 std::string NoLineBreak(const std::string& s) {
   size_t index = s.find('\n');

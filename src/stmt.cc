@@ -73,9 +73,9 @@ std::string AssignStmt::DebugString() const {
 
 Symbol AssignStmt::GetLhsSymbol(Evaluator* ev) const {
   if (!lhs->IsLiteral()) {
-    std::string buf;
+    StringBuilder buf;
     lhs->Eval(ev, &buf);
-    return Intern(buf);
+    return Intern(buf.str());
   }
 
   if (!lhs_sym_cache_.IsValid()) {

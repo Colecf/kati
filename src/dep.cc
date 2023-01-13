@@ -434,10 +434,10 @@ class DepBuilder {
       }
       auto var = vars->Lookup(implicit_outputs_var_name_);
       if (var->IsDefined()) {
-        std::string implicit_outputs;
+        StringBuilder implicit_outputs;
         var->Eval(ev_, &implicit_outputs);
 
-        for (std::string_view output : WordScanner(implicit_outputs)) {
+        for (std::string_view output : WordScanner(implicit_outputs.str())) {
           Symbol sym = Intern(TrimLeadingCurdir(output));
           rules_[sym].SetImplicitOutput(sym, p.first, &p.second);
           p.second.AddImplicitOutput(sym, &rules_[sym]);
@@ -446,10 +446,10 @@ class DepBuilder {
 
       var = vars->Lookup(validations_var_name_);
       if (var->IsDefined()) {
-        std::string validations;
+        StringBuilder validations;
         var->Eval(ev_, &validations);
 
-        for (std::string_view validation : WordScanner(validations)) {
+        for (std::string_view validation : WordScanner(validations.str())) {
           Symbol sym = Intern(TrimLeadingCurdir(validation));
           p.second.AddValidation(sym);
         }
@@ -457,10 +457,10 @@ class DepBuilder {
 
       var = vars->Lookup(symlink_outputs_var_name_);
       if (var->IsDefined()) {
-        std::string symlink_outputs;
+        StringBuilder symlink_outputs;
         var->Eval(ev_, &symlink_outputs);
 
-        for (std::string_view output : WordScanner(symlink_outputs)) {
+        for (std::string_view output : WordScanner(symlink_outputs.str())) {
           Symbol sym = Intern(TrimLeadingCurdir(output));
           p.second.AddSymlinkOutput(sym);
         }
@@ -713,14 +713,13 @@ class DepBuilder {
         if (var->op() == AssignOp::PLUS_EQ) {
           Var* old_var = ev_->LookupVar(name);
           if (old_var->IsDefined()) {
-            // TODO: This would be incorrect and has a leak.
-            std::shared_ptr<std::string> s = std::make_shared<std::string>();
-            old_var->Eval(ev_, s.get());
-            if (!s->empty())
-              *s += ' ';
-            new_var->Eval(ev_, s.get());
+            StringBuilder s;
+            old_var->Eval(ev_, &s);
+            if (!s.empty())
+              s += ' ';
+            new_var->Eval(ev_, &s);
             new_var =
-                new SimpleVar(*s, old_var->Origin(), frame.Current(), n->loc);
+                new SimpleVar(s.str(), old_var->Origin(), frame.Current(), n->loc);
           }
         } else if (var->op() == AssignOp::QUESTION_EQ) {
           Var* old_var = ev_->LookupVar(name);

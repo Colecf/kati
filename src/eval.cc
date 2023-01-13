@@ -315,9 +315,9 @@ void Evaluator::EvalAssign(const AssignStmt* stmt) {
     Error("*** empty variable name.");
 
   if (lhs == kKatiReadonlySym) {
-    std::string rhs;
+    StringBuilder rhs;
     stmt->rhs->Eval(this, &rhs);
-    for (auto const& name : WordScanner(rhs)) {
+    for (auto const& name : WordScanner(rhs.str())) {
       Var* var = Intern(name).GetGlobalVar();
       if (!var->IsDefined()) {
         Error(StringPrintf("*** unknown variable: %s",
@@ -396,9 +396,9 @@ static std::string FormatRuleError(const std::string& before_term) {
 }
 
 void Evaluator::MarkVarsReadonly(Value* vars_list) {
-  std::string vars_list_string;
+  StringBuilder vars_list_string;
   vars_list->Eval(this, &vars_list_string);
-  for (auto const& name : WordScanner(vars_list_string)) {
+  for (auto const& name : WordScanner(vars_list_string.str())) {
     Var* var = current_scope_->Lookup(Intern(name));
     if (!var->IsDefined()) {
       Error(
@@ -572,9 +572,9 @@ void Evaluator::EvalIf(const IfStmt* stmt) {
   switch (stmt->op) {
     case CondOp::IFDEF:
     case CondOp::IFNDEF: {
-      std::string var_name;
+      StringBuilder var_name;
       stmt->lhs->Eval(this, &var_name);
-      Symbol lhs = Intern(TrimRightSpace(var_name));
+      Symbol lhs = Intern(TrimRightSpace(var_name.str()));
       if (const auto& s = lhs.str();
           std::find_if(s.begin(), s.end(), ::isspace) != s.end()) {
         Error("*** invalid syntax in conditional.");
