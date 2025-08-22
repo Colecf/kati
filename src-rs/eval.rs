@@ -19,12 +19,12 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::io::BufWriter;
 use std::os::unix::ffi::OsStringExt;
-use std::sync::{Arc, LazyLock, Weak};
+use std::rc::{Rc, Weak};
 
 use anyhow::{Context, Result};
 use bytes::{Buf, Bytes};
 use memchr::{memchr, memchr2};
-use parking_lot::Mutex;
+use std::cell::RefCell;
 
 use crate::expr::Evaluable;
 use crate::expr::Value;
@@ -37,7 +37,10 @@ use crate::stmt::{
     Statement,
 };
 use crate::strutil::{is_space_byte, trim_leading_curdir, trim_right_space, word_scanner};
-use crate::symtab::{ALLOW_RULES_SYM, KATI_READONLY_SYM, MAKEFILE_LIST, SHELL_SYM, Symbol, intern};
+use crate::symtab::{
+    ALLOW_RULES_SYM, KATI_READONLY_SYM, MAKEFILE_LIST, SHELL_SYM, Symbol, ThreadLocalHelpers,
+    intern,
+};
 use crate::var::{Var, VarOrigin, Variable, Vars};
 use crate::{collect_stats_with_slow_report, error_loc, file_cache, log, warn_loc};
 
@@ -76,28 +79,28 @@ pub struct Frame {
     parent: Option<Weak<Frame>>,
     name: Bytes,
     location: Option<Loc>,
-    children: Mutex<Vec<Arc<Frame>>>,
+    children: RefCell<Vec<Rc<Frame>>>,
 }
 
 impl Frame {
     fn new(
         frame_type: FrameType,
-        parent: Option<Arc<Frame>>,
+        parent: Option<Rc<Frame>>,
         loc: Option<Loc>,
         name: Bytes,
     ) -> Self {
         assert!(parent.is_none() == (frame_type == FrameType::Root));
         Self {
             frame_type,
-            parent: parent.map(|p| Arc::downgrade(&p)),
+            parent: parent.map(|p| Rc::downgrade(&p)),
             name,
             location: loc,
-            children: Mutex::new(Vec::new()),
+            children: RefCell::new(Vec::new()),
         }
     }
 
-    fn add(&self, child: Arc<Frame>) {
-        self.children.lock().push(child);
+    fn add(&self, child: Rc<Frame>) {
+        self.children.borrow_mut().push(child);
     }
 
     fn print_json_trace(&self, tf: &mut dyn std::io::Write, indent: usize) -> Result<()> {
@@ -129,20 +132,20 @@ impl Frame {
 }
 
 pub struct ScopedFrame {
-    stack: Arc<Mutex<Vec<Arc<Frame>>>>,
-    frame: Option<Arc<Frame>>,
+    stack: Rc<RefCell<Vec<Rc<Frame>>>>,
+    frame: Option<Rc<Frame>>,
 }
 
 impl ScopedFrame {
-    fn new(stack: Arc<Mutex<Vec<Arc<Frame>>>>, frame: Option<Arc<Frame>>) -> Self {
+    fn new(stack: Rc<RefCell<Vec<Rc<Frame>>>>, frame: Option<Rc<Frame>>) -> Self {
         if let Some(frame) = frame.clone() {
-            let mut stack = stack.lock();
+            let mut stack = stack.borrow_mut();
             stack.last().unwrap().add(frame.clone());
             stack.push(frame);
         }
         Self { stack, frame }
     }
-    pub fn current(&self) -> Option<Arc<Frame>> {
+    pub fn current(&self) -> Option<Rc<Frame>> {
         self.frame.clone()
     }
 }
@@ -150,7 +153,7 @@ impl ScopedFrame {
 impl Drop for ScopedFrame {
     fn drop(&mut self) {
         if let Some(frame) = &self.frame {
-            let mut stack = self.stack.lock();
+            let mut stack = self.stack.borrow_mut();
             let last = stack.pop().unwrap();
             assert!(last.name == frame.name);
             assert!(last.location == frame.location);
@@ -165,7 +168,7 @@ struct IncludeGraphNode {
 
 struct IncludeGraph {
     nodes: HashMap<Bytes, IncludeGraphNode>,
-    include_stack: Vec<Arc<Frame>>,
+    include_stack: Vec<Rc<Frame>>,
 }
 
 impl IncludeGraph {
@@ -213,7 +216,7 @@ impl IncludeGraph {
         Ok(())
     }
 
-    fn merge_tree_node(&mut self, frame: &Arc<Frame>) {
+    fn merge_tree_node(&mut self, frame: &Rc<Frame>) {
         if frame.frame_type == FrameType::Parse {
             self.nodes.entry(frame.name.clone()).or_default();
 
@@ -226,7 +229,7 @@ impl IncludeGraph {
             self.include_stack.push(frame.clone());
         }
 
-        for child in &*frame.children.lock() {
+        for child in &*frame.children.borrow_mut() {
             self.merge_tree_node(child);
         }
 
@@ -236,24 +239,25 @@ impl IncludeGraph {
     }
 }
 
-static USED_UNDEFINED_VARS: LazyLock<Mutex<HashSet<Symbol>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
+thread_local! {
+    static USED_UNDEFINED_VARS: RefCell<HashSet<Symbol>> = RefCell::new(HashSet::new());
+}
 
 pub struct Evaluator {
-    pub rule_vars: HashMap<Symbol, Arc<Vars>>,
+    pub rule_vars: HashMap<Symbol, Rc<Vars>>,
     pub rules: Vec<Rule>,
     pub exports: HashMap<Symbol, bool>,
     symbols_for_eval: HashSet<Symbol>,
 
     in_rule: bool,
-    pub current_scope: Option<Arc<Vars>>,
+    pub current_scope: Option<Rc<Vars>>,
 
     pub loc: Option<Loc>,
     is_bootstrap: bool,
     is_commandline: bool,
 
     trace: bool,
-    stack: Arc<Mutex<Vec<Arc<Frame>>>>,
+    stack: Rc<RefCell<Vec<Rc<Frame>>>>,
     assignment_tracefile: Option<Box<dyn std::io::Write>>,
     assignment_sep: String,
 
@@ -300,7 +304,7 @@ impl Evaluator {
 
             trace: FLAGS.dump_variable_assignment_trace.is_some()
                 || FLAGS.dump_include_graph.is_some(),
-            stack: Arc::new(Mutex::new(vec![Arc::new(Frame::new(
+            stack: Rc::new(RefCell::new(vec![Rc::new(Frame::new(
                 FrameType::Root,
                 None,
                 None,
@@ -366,14 +370,14 @@ impl Evaluator {
         self.is_commandline = false;
     }
 
-    pub fn current_frame(&self) -> Arc<Frame> {
-        self.stack.lock().last().unwrap().clone()
+    pub fn current_frame(&self) -> Rc<Frame> {
+        self.stack.borrow_mut().last().unwrap().clone()
     }
 
     pub fn eval_rhs(
         &mut self,
         lhs: Symbol,
-        rhs_v: Arc<Value>,
+        rhs_v: Rc<Value>,
         orig_rhs: Bytes,
         op: AssignOp,
         is_override: bool,
@@ -383,9 +387,9 @@ impl Evaluator {
         } else if self.is_commandline {
             (VarOrigin::CommandLine, None)
         } else if is_override {
-            (VarOrigin::Override, self.stack.lock().last().cloned())
+            (VarOrigin::Override, self.stack.borrow_mut().last().cloned())
         } else {
-            (VarOrigin::File, self.stack.lock().last().cloned())
+            (VarOrigin::File, self.stack.borrow_mut().last().cloned())
         };
 
         let result: Var;
@@ -477,7 +481,7 @@ impl Evaluator {
         self.in_rule = false;
         let lhs = stmt.get_lhs_symbol(self)?;
 
-        if lhs == *KATI_READONLY_SYM {
+        if lhs == KATI_READONLY_SYM.get_symbol() {
             let rhs = stmt.rhs.eval_to_buf(self)?;
             for name in word_scanner(&rhs) {
                 let name = intern(rhs.slice_ref(name));
@@ -585,7 +589,7 @@ impl Evaluator {
             let scope = self
                 .rule_vars
                 .entry(*target)
-                .or_insert_with(|| Arc::new(Vars::new()))
+                .or_insert_with(|| Rc::new(Vars::new()))
                 .clone();
 
             let rhs = if assign.rhs.is_empty() {
@@ -596,23 +600,23 @@ impl Evaluator {
                 } else {
                     b" = "
                 };
-                Some(Arc::new(Value::List(
+                Some(Rc::new(Value::List(
                     self.loc.clone(),
                     vec![
-                        Arc::new(Value::Literal(None, after_targets.slice_ref(assign.rhs))),
-                        Arc::new(Value::Literal(None, Bytes::from_static(sep))),
+                        Rc::new(Value::Literal(None, after_targets.slice_ref(assign.rhs))),
+                        Rc::new(Value::Literal(None, Bytes::from_static(sep))),
                         stmt_rhs,
                     ],
                 )))
             } else {
-                Some(Arc::new(Value::Literal(
+                Some(Rc::new(Value::Literal(
                     None,
                     after_targets.slice_ref(assign.rhs),
                 )))
             };
 
             self.current_scope = Some(scope);
-            if var_sym == *KATI_READONLY_SYM {
+            if var_sym == KATI_READONLY_SYM.get_symbol() {
                 if let Some(rhs) = rhs {
                     self.mark_vars_readonly(&rhs)?;
                 }
@@ -743,7 +747,7 @@ impl Evaluator {
 
         if !self.in_rule {
             let stmts = parse_buf_no_stats(&stmt.orig(), stmt.loc())?;
-            let stmts = stmts.lock();
+            let stmts = stmts.borrow_mut();
             for a in &*stmts {
                 a.eval(self)?;
             }
@@ -794,7 +798,7 @@ impl Evaluator {
             true => &stmt.true_stmts,
             false => &stmt.false_stmts,
         };
-        let stmts = stmts.lock();
+        let stmts = stmts.borrow_mut();
         for a in stmts.iter() {
             log!("{:?}", a);
             a.eval(self)?;
@@ -815,10 +819,10 @@ impl Evaluator {
         };
 
         let v = fname.slice_ref(trim_leading_curdir(fname));
-        if let Some(var_list) = self.lookup_var(*MAKEFILE_LIST)? {
+        if let Some(var_list) = self.lookup_var(MAKEFILE_LIST.get_symbol())? {
             var_list.write().append_str(&v, self.current_frame())?;
         } else {
-            MAKEFILE_LIST.set_global_var(
+            MAKEFILE_LIST.get_symbol().set_global_var(
                 Variable::with_simple_string(
                     v,
                     VarOrigin::File,
@@ -829,7 +833,7 @@ impl Evaluator {
                 None,
             )?;
         }
-        for stmt in mk.stmts.lock().iter() {
+        for stmt in mk.stmts.borrow_mut().iter() {
             log!("{stmt:?}");
             stmt.eval(self)?;
         }
@@ -940,7 +944,7 @@ impl Evaluator {
     pub fn lookup_var_global(&self, name: Symbol) -> Option<Var> {
         let v = name.get_global_var();
         if v.is_none() {
-            USED_UNDEFINED_VARS.lock().insert(name);
+            USED_UNDEFINED_VARS.with_borrow_mut(|x| x.insert(name));
         }
         v
     }
@@ -1092,13 +1096,13 @@ impl Evaluator {
             return ScopedFrame::new(self.stack.clone(), None);
         }
 
-        let parent = self.stack.lock().last().cloned();
+        let parent = self.stack.borrow_mut().last().cloned();
         let frame = Frame::new(frame_type, parent, Some(loc), name);
-        ScopedFrame::new(self.stack.clone(), Some(Arc::new(frame)))
+        ScopedFrame::new(self.stack.clone(), Some(Rc::new(frame)))
     }
 
     pub fn get_shell(&mut self) -> Result<Bytes> {
-        self.eval_var(*SHELL_SYM)
+        self.eval_var(SHELL_SYM.get_symbol())
     }
 
     pub fn get_shell_flag(&self) -> &'static [u8] {
@@ -1106,16 +1110,18 @@ impl Evaluator {
     }
 
     fn get_allow_rules(&mut self) -> Result<RulesAllowed> {
-        Ok(match self.eval_var(*ALLOW_RULES_SYM)?.as_ref() {
-            b"warning" => RulesAllowed::Warning,
-            b"error" => RulesAllowed::Error,
-            _ => RulesAllowed::Allowed,
-        })
+        Ok(
+            match self.eval_var(ALLOW_RULES_SYM.get_symbol())?.as_ref() {
+                b"warning" => RulesAllowed::Warning,
+                b"error" => RulesAllowed::Error,
+                _ => RulesAllowed::Allowed,
+            },
+        )
     }
 
     pub fn dump_include_json(&self, filename: &OsStr) -> Result<()> {
         let mut graph = IncludeGraph::new();
-        graph.merge_tree_node(self.stack.lock().first().unwrap());
+        graph.merge_tree_node(self.stack.borrow_mut().first().unwrap());
         let mut w: Box<dyn std::io::Write> = if filename == OsStr::new("-") {
             Box::new(std::io::stdout())
         } else {
@@ -1128,6 +1134,6 @@ impl Evaluator {
     }
 
     pub fn used_undefined_vars() -> HashSet<Symbol> {
-        USED_UNDEFINED_VARS.lock().clone()
+        USED_UNDEFINED_VARS.with_borrow_mut(|x| x.clone())
     }
 }

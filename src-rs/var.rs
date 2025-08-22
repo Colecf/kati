@@ -16,16 +16,17 @@ limitations under the License.
 
 use std::{
     borrow::Cow,
+    cell::RefCell,
     collections::{HashMap, HashSet},
     ffi::OsString,
     fmt::Debug,
     os::unix::ffi::OsStrExt,
-    sync::{Arc, LazyLock},
+    rc::Rc,
 };
 
 use anyhow::Result;
 use bytes::{BufMut, Bytes};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 
 use crate::{
     command::AutoCommandVar,
@@ -66,20 +67,20 @@ pub fn get_origin_str(origin: VarOrigin) -> &'static str {
     }
 }
 
-pub type Var = Arc<RwLock<Variable>>;
+pub type Var = Rc<RwLock<Variable>>;
 
 #[derive(Debug)]
 pub struct Variable {
     loc: Option<Loc>,
 
-    definition: Option<Arc<Frame>>,
+    definition: Option<Rc<Frame>>,
 
     origin: VarOrigin,
 
     pub assign_op: Option<AssignOp>,
     pub readonly: bool,
-    pub deprecated: Option<Arc<String>>,
-    obsolete: Option<Arc<String>>,
+    pub deprecated: Option<Rc<String>>,
+    obsolete: Option<Rc<String>>,
 
     visibility_prefix: Option<Vec<OsString>>,
 
@@ -89,7 +90,7 @@ pub struct Variable {
 #[derive(Debug)]
 pub enum InnerVar {
     Simple(Vec<u8>),
-    Recursive { v: Arc<Value>, orig: Bytes },
+    Recursive { v: Rc<Value>, orig: Bytes },
     AutoCommand(Symbol, AutoCommandVar),
     ShellStatus,
     VariableNames { name: Bytes, all: bool },
@@ -102,13 +103,13 @@ impl Variable {
     pub fn origin(&self) -> VarOrigin {
         self.origin
     }
-    pub fn definition(&self) -> &Option<Arc<Frame>> {
+    pub fn definition(&self) -> &Option<Rc<Frame>> {
         &self.definition
     }
     pub fn obsolete(&self) -> bool {
         self.obsolete.is_some()
     }
-    pub fn set_obsolete(&mut self, message: Arc<String>) {
+    pub fn set_obsolete(&mut self, message: Rc<String>) {
         self.obsolete = Some(message);
     }
     pub fn flavor(&self) -> &'static str {
@@ -140,22 +141,17 @@ impl Variable {
     pub fn immediate_eval(&self) -> bool {
         matches!(&self.value, InnerVar::Simple(_))
     }
-    pub fn append_var(
-        &mut self,
-        v: Arc<Value>,
-        frame: Arc<Frame>,
-        loc: Option<&Loc>,
-    ) -> Result<()> {
+    pub fn append_var(&mut self, v: Rc<Value>, frame: Rc<Frame>, loc: Option<&Loc>) -> Result<()> {
         match &mut self.value {
             InnerVar::Simple(_) => {
                 panic!("append_var should not be used when immediate_eval returns true")
             }
             InnerVar::Recursive { v: prev, .. } => {
-                *prev = Arc::new(Value::List(
+                *prev = Rc::new(Value::List(
                     prev.loc(),
                     vec![
                         prev.clone(),
-                        Arc::new(Value::Literal(None, Bytes::from_static(b" "))),
+                        Rc::new(Value::Literal(None, Bytes::from_static(b" "))),
                         v,
                     ],
                 ));
@@ -169,7 +165,7 @@ impl Variable {
         }
         Ok(())
     }
-    pub fn append_str(&mut self, buf: &Bytes, frame: Arc<Frame>) -> Result<()> {
+    pub fn append_str(&mut self, buf: &Bytes, frame: Rc<Frame>) -> Result<()> {
         match &mut self.value {
             InnerVar::Simple(s) => {
                 s.push(b' ');
@@ -177,12 +173,12 @@ impl Variable {
                 self.definition = Some(frame);
             }
             InnerVar::Recursive { v: prev, .. } => {
-                *prev = Arc::new(Value::List(
+                *prev = Rc::new(Value::List(
                     prev.loc(),
                     vec![
                         prev.clone(),
-                        Arc::new(Value::Literal(None, Bytes::from_static(b" "))),
-                        Arc::new(Value::Literal(None, buf.clone())),
+                        Rc::new(Value::Literal(None, Bytes::from_static(b" "))),
+                        Rc::new(Value::Literal(None, buf.clone())),
                     ],
                 ));
                 self.definition = Some(frame);
@@ -227,23 +223,23 @@ impl Variable {
             InnerVar::AutoCommand(sym, _) => {
                 error!("$(value {sym}) is not implemented yet");
             }
-            InnerVar::ShellStatus => {
-                Cow::Owned(if let Some(status) = SHELL_STATUS.lock().as_ref() {
+            InnerVar::ShellStatus => SHELL_STATUS.with_borrow_mut(|status| {
+                Cow::Owned(if let Some(status) = status.as_ref() {
                     status.to_string().as_bytes().to_vec()
                 } else {
                     Vec::new()
                 })
-            }
+            }),
             InnerVar::VariableNames { name, .. } => Cow::Borrowed(name),
         })
     }
 
     pub fn new_simple(
         origin: VarOrigin,
-        frame: Option<Arc<Frame>>,
+        frame: Option<Rc<Frame>>,
         loc: Option<Loc>,
-    ) -> Arc<RwLock<Self>> {
-        Arc::new(RwLock::new(Self {
+    ) -> Rc<RwLock<Self>> {
+        Rc::new(RwLock::new(Self {
             loc,
             definition: frame,
             origin,
@@ -259,10 +255,10 @@ impl Variable {
     pub fn with_simple_string(
         value: Bytes,
         origin: VarOrigin,
-        frame: Option<Arc<Frame>>,
+        frame: Option<Rc<Frame>>,
         loc: Option<Loc>,
-    ) -> Arc<RwLock<Self>> {
-        Arc::new(RwLock::new(Self {
+    ) -> Rc<RwLock<Self>> {
+        Rc::new(RwLock::new(Self {
             loc,
             definition: frame,
             origin,
@@ -277,13 +273,13 @@ impl Variable {
 
     pub fn with_simple_value(
         origin: VarOrigin,
-        frame: Option<Arc<Frame>>,
+        frame: Option<Rc<Frame>>,
         loc: Option<Loc>,
         ev: &mut Evaluator,
         v: &Value,
-    ) -> Result<Arc<RwLock<Self>>> {
+    ) -> Result<Rc<RwLock<Self>>> {
         let value = v.eval_to_buf(ev)?;
-        Ok(Arc::new(RwLock::new(Self {
+        Ok(Rc::new(RwLock::new(Self {
             loc,
             definition: frame,
             origin,
@@ -297,13 +293,13 @@ impl Variable {
     }
 
     pub fn new_recursive(
-        v: Arc<Value>,
+        v: Rc<Value>,
         origin: VarOrigin,
-        frame: Option<Arc<Frame>>,
+        frame: Option<Rc<Frame>>,
         loc: Option<Loc>,
         orig: Bytes,
-    ) -> Arc<RwLock<Self>> {
-        Arc::new(RwLock::new(Self {
+    ) -> Rc<RwLock<Self>> {
+        Rc::new(RwLock::new(Self {
             loc,
             definition: frame,
             origin,
@@ -316,8 +312,8 @@ impl Variable {
         }))
     }
 
-    pub fn new_autocommand(sym: Symbol, a: AutoCommandVar) -> Arc<RwLock<Self>> {
-        Arc::new(RwLock::new(Self {
+    pub fn new_autocommand(sym: Symbol, a: AutoCommandVar) -> Rc<RwLock<Self>> {
+        Rc::new(RwLock::new(Self {
             loc: None,
             definition: None,
             origin: VarOrigin::Automatic,
@@ -330,8 +326,8 @@ impl Variable {
         }))
     }
 
-    pub fn new_shell_status_var() -> Arc<RwLock<Self>> {
-        Arc::new(RwLock::new(Self {
+    pub fn new_shell_status_var() -> Rc<RwLock<Self>> {
+        Rc::new(RwLock::new(Self {
             loc: None,
             definition: None,
             origin: VarOrigin::Override,
@@ -344,8 +340,8 @@ impl Variable {
         }))
     }
 
-    pub fn new_variable_names(name: &'static [u8], all: bool) -> Arc<RwLock<Self>> {
-        Arc::new(RwLock::new(Self {
+    pub fn new_variable_names(name: &'static [u8], all: bool) -> Rc<RwLock<Self>> {
+        Rc::new(RwLock::new(Self {
             loc: None,
             definition: None,
             origin: VarOrigin::Override,
@@ -382,9 +378,11 @@ impl Evaluable for Variable {
                     );
                 }
 
-                if let Some(status) = SHELL_STATUS.lock().as_ref() {
-                    out.put_slice(format!("{status}").as_bytes());
-                }
+                SHELL_STATUS.with_borrow_mut(|status| {
+                    if let Some(status) = status.as_ref() {
+                        out.put_slice(format!("{status}").as_bytes());
+                    }
+                })
             }
             InnerVar::VariableNames { all, .. } => {
                 let mut ww = WordWriter::new(out);
@@ -418,16 +416,19 @@ impl Evaluable for Variable {
     }
 }
 
-static SHELL_STATUS: LazyLock<Mutex<Option<i32>>> = LazyLock::new(|| Mutex::new(None));
-
-pub fn set_shell_status_var(status: i32) {
-    *SHELL_STATUS.lock() = Some(status)
+thread_local! {
+    static SHELL_STATUS: RefCell<Option<i32>> = RefCell::new(None);
 }
 
-pub static USED_ENV_VARS: LazyLock<Mutex<HashSet<Symbol>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
+pub fn set_shell_status_var(status: i32) {
+    SHELL_STATUS.with_borrow_mut(|s| *s = Some(status))
+}
 
-pub struct Vars(pub Mutex<HashMap<Symbol, Var>>);
+thread_local! {
+    pub static USED_ENV_VARS: RefCell<HashSet<Symbol>> = RefCell::new(HashSet::new());
+}
+
+pub struct Vars(pub RefCell<HashMap<Symbol, Var>>);
 
 impl Default for Vars {
     fn default() -> Self {
@@ -437,14 +438,14 @@ impl Default for Vars {
 
 impl Vars {
     pub fn new() -> Self {
-        Vars(Mutex::new(HashMap::new()))
+        Vars(RefCell::new(HashMap::new()))
     }
 
     pub fn lookup(&self, sym: Symbol) -> Option<Var> {
-        let ret = self.0.lock().get(&sym).cloned()?;
+        let ret = self.0.borrow_mut().get(&sym).cloned()?;
         match ret.read().origin() {
             VarOrigin::Environment | VarOrigin::EnvironmentOverride => {
-                USED_ENV_VARS.lock().insert(sym);
+                USED_ENV_VARS.with_borrow_mut(|vars| vars.insert(sym));
             }
             _ => {}
         }
@@ -452,12 +453,12 @@ impl Vars {
     }
 
     pub fn peek(&self, sym: Symbol) -> Option<Var> {
-        self.0.lock().get(&sym).cloned()
+        self.0.borrow_mut().get(&sym).cloned()
     }
 
     pub fn assign(&self, sym: Symbol, var: Var, readonly: &mut bool) -> Result<()> {
         *readonly = false;
-        let mut vars = self.0.lock();
+        let mut vars = self.0.borrow_mut();
         if let Some(orig) = vars.get_mut(&sym) {
             if orig.read().readonly {
                 *readonly = true;
@@ -478,8 +479,8 @@ impl Vars {
     }
 
     pub fn merge_from(&self, vars: &Vars) {
-        let mut to = self.0.lock();
-        let from = vars.0.lock();
+        let mut to = self.0.borrow_mut();
+        let from = vars.0.borrow_mut();
 
         for (sym, var) in from.iter() {
             to.insert(*sym, var.clone());
@@ -489,28 +490,28 @@ impl Vars {
 
 impl Clone for Vars {
     fn clone(&self) -> Self {
-        let m = self.0.lock();
-        Self(Mutex::new(m.clone()))
+        let m = self.0.borrow_mut();
+        Self(RefCell::new(m.clone()))
     }
 }
 
 impl Debug for Vars {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let vars = self.0.lock();
+        let vars = self.0.borrow_mut();
         f.debug_map().entries(vars.iter()).finish()
     }
 }
 
 pub struct ScopedVar {
-    vars: Arc<Vars>,
+    vars: Rc<Vars>,
     sym: Symbol,
     orig: Option<Var>,
 }
 
 impl ScopedVar {
-    pub fn new(vars: Arc<Vars>, sym: Symbol, var: Var) -> Self {
+    pub fn new(vars: Rc<Vars>, sym: Symbol, var: Var) -> Self {
         let orig = {
-            let mut vars = vars.0.lock();
+            let mut vars = vars.0.borrow_mut();
             vars.insert(sym, var)
         };
         Self { vars, sym, orig }
@@ -519,7 +520,7 @@ impl ScopedVar {
 
 impl Drop for ScopedVar {
     fn drop(&mut self) {
-        let mut vars = self.vars.0.lock();
+        let mut vars = self.vars.0.borrow_mut();
         if let Some(orig) = self.orig.clone() {
             vars.insert(self.sym, orig);
         } else {

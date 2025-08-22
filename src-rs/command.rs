@@ -16,8 +16,9 @@ limitations under the License.
 
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
-use parking_lot::Mutex;
-use std::{collections::HashSet, fmt::Debug, sync::Arc};
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::{collections::HashSet, fmt::Debug};
 
 use crate::{
     dep::DepNode,
@@ -38,7 +39,7 @@ pub struct AutoCommandVar {
     typ: AutoCommand,
     sym: Symbol,
     variant: AutoCommandVariant,
-    current_dep_node: Arc<Mutex<Option<Arc<Mutex<DepNode>>>>>,
+    current_dep_node: Rc<RefCell<Option<Rc<RefCell<DepNode>>>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -48,7 +49,7 @@ enum AutoCommand {
     Hat,
     Plus,
     Star,
-    Question { found_new_inputs: Arc<Mutex<bool>> },
+    Question { found_new_inputs: Rc<RefCell<bool>> },
     NotImplemented,
 }
 
@@ -87,8 +88,8 @@ impl AutoCommandVar {
     }
 
     fn eval_impl(&self, ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
-        let current_dep_node = self.current_dep_node.lock();
-        let current_dep_node = current_dep_node.as_ref().unwrap().lock();
+        let current_dep_node = self.current_dep_node.borrow_mut();
+        let current_dep_node = current_dep_node.as_ref().unwrap().borrow_mut();
 
         match &self.typ {
             AutoCommand::At => {
@@ -127,7 +128,7 @@ impl AutoCommandVar {
                     // Check timestamps using the shell at the start of rule execution
                     // instead.
                     out.put_slice(b"${KATI_NEW_INPUTS}");
-                    if !*found_new_inputs.lock() {
+                    if !*found_new_inputs.borrow_mut() {
                         let mut def = BytesMut::new();
 
                         let mut ww = WordWriter::new(&mut def);
@@ -143,7 +144,7 @@ impl AutoCommandVar {
                         ww.write(&current_dep_node.output.as_bytes());
                         ww.write(b")) && export KATI_NEW_INPUTS");
                         ev.delayed_output_commands.push(def.freeze());
-                        *found_new_inputs.lock() = true;
+                        *found_new_inputs.borrow_mut() = true;
                     }
                 } else {
                     let mut ww = WordWriter::new(out);
@@ -209,16 +210,16 @@ fn parse_command_prefixes(cmds: Bytes, echo: &mut bool, ignore_error: &mut bool)
 
 pub struct CommandEvaluator<'a> {
     pub ev: &'a mut Evaluator,
-    pub current_dep_node: Arc<Mutex<Option<Arc<Mutex<DepNode>>>>>,
-    pub found_new_inputs: Arc<Mutex<bool>>,
+    pub current_dep_node: Rc<RefCell<Option<Rc<RefCell<DepNode>>>>>,
+    pub found_new_inputs: Rc<RefCell<bool>>,
 }
 
 impl<'a> CommandEvaluator<'a> {
     pub fn new(ev: &'a mut Evaluator) -> Result<Self> {
-        let found_new_inputs = Arc::new(Mutex::new(false));
+        let found_new_inputs = Rc::new(RefCell::new(false));
         let mut ret = Self {
             ev,
-            current_dep_node: Arc::new(Mutex::new(None)),
+            current_dep_node: Rc::new(RefCell::new(None)),
             found_new_inputs: found_new_inputs.clone(),
         };
         ret.register_autocommand('@', AutoCommand::At)?;
@@ -270,18 +271,18 @@ impl<'a> CommandEvaluator<'a> {
         Ok(())
     }
 
-    pub fn eval(&mut self, n: &Arc<Mutex<DepNode>>) -> Result<Vec<Command>> {
+    pub fn eval(&mut self, n: &Rc<RefCell<DepNode>>) -> Result<Vec<Command>> {
         let mut result: Vec<Command> = Vec::new();
         let node_cmds;
         {
-            let node = n.lock();
+            let node = n.borrow_mut();
             self.ev.loc = node.loc.clone();
             self.ev.current_scope = node.rule_vars.clone();
             node_cmds = node.cmds.clone();
         }
         self.ev.is_evaluating_command = true;
-        *self.current_dep_node.lock() = Some(n.clone());
-        *self.found_new_inputs.lock() = false;
+        *self.current_dep_node.borrow_mut() = Some(n.clone());
+        *self.found_new_inputs.borrow_mut() = false;
         for v in node_cmds {
             self.ev.loc = v.loc();
             let cmds_buf = v.eval_to_buf(self.ev)?;
@@ -303,7 +304,7 @@ impl<'a> CommandEvaluator<'a> {
 
                 if !cmd.is_empty() {
                     result.push(Command {
-                        output: n.lock().output,
+                        output: n.borrow_mut().output,
                         cmd,
                         echo,
                         ignore_error,
@@ -315,7 +316,7 @@ impl<'a> CommandEvaluator<'a> {
 
         if !self.ev.delayed_output_commands.is_empty() {
             let mut output_commands = Vec::new();
-            let node = n.lock();
+            let node = n.borrow_mut();
             for cmd in &self.ev.delayed_output_commands {
                 output_commands.push(Command {
                     output: node.output,

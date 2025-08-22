@@ -25,11 +25,11 @@ limitations under the License.
 use std::ffi::{OsStr, OsString};
 use std::io::{Write, stdout};
 use std::os::unix::ffi::OsStrExt;
-use std::sync::Arc;
+use std::rc::Rc;
 
 use anyhow::{Result, bail};
 use bytes::{BufMut, Bytes, BytesMut};
-use parking_lot::Mutex;
+use std::cell::RefCell;
 
 #[cfg(feature = "gperf")]
 use gperftools::{HEAP_PROFILER, PROFILER};
@@ -61,7 +61,7 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-fn read_bootstrap_makefile(targets: &[Symbol]) -> Result<Arc<Mutex<Vec<Stmt>>>> {
+fn read_bootstrap_makefile(targets: &[Symbol]) -> Result<Rc<RefCell<Vec<Stmt>>>> {
     let mut bootstrap = BytesMut::new();
     bootstrap.put_slice(b"CC?=cc\n");
     if cfg!(target_os = "macos") {
@@ -144,7 +144,7 @@ fn run(targets: &[Symbol], cl_vars: &Vec<Bytes>, orig_args: OsString) -> Result<
     )?;
     for (k, v) in std::env::vars_os() {
         let v = Bytes::from(v.as_bytes().to_vec());
-        let val = Arc::new(Value::Literal(None, v.clone()));
+        let val = Rc::new(Value::Literal(None, v.clone()));
         intern(k.as_bytes().to_vec()).set_global_var(
             Variable::new_recursive(
                 val,
@@ -167,7 +167,7 @@ fn run(targets: &[Symbol], cl_vars: &Vec<Bytes>, orig_args: OsString) -> Result<
             Loc::default(),
         );
         ev.in_bootstrap();
-        for stmt in bootstrap_asts.lock().iter() {
+        for stmt in bootstrap_asts.borrow_mut().iter() {
             log!("{stmt:?}");
             stmt.eval(&mut ev)?;
         }
@@ -188,7 +188,7 @@ fn run(targets: &[Symbol], cl_vars: &Vec<Bytes>, orig_args: OsString) -> Result<
                     line: 0,
                 },
             )?;
-            let asts = asts.lock();
+            let asts = asts.borrow_mut();
             assert!(asts.len() == 1);
             asts[0].eval(&mut ev)?;
         }
@@ -212,7 +212,7 @@ fn run(targets: &[Symbol], cl_vars: &Vec<Bytes>, orig_args: OsString) -> Result<
         let Some(mk) = kati::file_cache::get_makefile(&makefile)? else {
             bail!("makefile not found")
         };
-        let stmts = mk.stmts.lock();
+        let stmts = mk.stmts.borrow_mut();
         for stmt in stmts.iter() {
             log!("{stmt:?}");
             stmt.eval(&mut ev)?;
@@ -349,14 +349,14 @@ fn main() {
     {
         if let Some(path) = &FLAGS.cpu_profile_path {
             PROFILER
-                .lock()
+                .borrow_mut()
                 .unwrap()
                 .start(std::ffi::CString::new(path.as_bytes()).unwrap())
                 .unwrap();
         }
         if let Some(path) = &FLAGS.memory_profile_path {
             HEAP_PROFILER
-                .lock()
+                .borrow_mut()
                 .unwrap()
                 .start(std::ffi::CString::new(path.as_bytes()).unwrap())
                 .unwrap();
@@ -389,10 +389,10 @@ fn main() {
     #[cfg(feature = "gperf")]
     {
         if FLAGS.cpu_profile_path.is_some() {
-            PROFILER.lock().unwrap().stop().unwrap();
+            PROFILER.borrow_mut().unwrap().stop().unwrap();
         }
         if FLAGS.memory_profile_path.is_some() {
-            HEAP_PROFILER.lock().unwrap().stop().unwrap();
+            HEAP_PROFILER.borrow_mut().unwrap().stop().unwrap();
         }
     }
     kati::stats::report_all_stats();

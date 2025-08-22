@@ -17,12 +17,12 @@ limitations under the License.
 use anyhow::Result;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use memchr::memchr;
-use parking_lot::Mutex;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::{
     collections::{HashMap, HashSet},
     ffi::OsStr,
     os::unix::ffi::OsStrExt,
-    sync::Arc,
 };
 
 use crate::{
@@ -41,12 +41,12 @@ use crate::{
     warn_loc,
 };
 
-pub type NamedDepNode = (Symbol, Arc<Mutex<DepNode>>);
+pub type NamedDepNode = (Symbol, Rc<RefCell<DepNode>>);
 
 #[derive(Debug)]
 pub struct DepNode {
     pub output: Symbol,
-    pub cmds: Vec<Arc<Value>>,
+    pub cmds: Vec<Rc<Value>>,
     pub deps: Vec<NamedDepNode>,
     pub order_onlys: Vec<NamedDepNode>,
     pub validations: Vec<NamedDepNode>,
@@ -58,7 +58,7 @@ pub struct DepNode {
     pub actual_inputs: Vec<Symbol>,
     pub actual_order_only_inputs: Vec<Symbol>,
     pub actual_validations: Vec<Symbol>,
-    pub rule_vars: Option<Arc<Vars>>,
+    pub rule_vars: Option<Rc<Vars>>,
     pub depfile_var: Option<Var>,
     pub ninja_pool_var: Option<Var>,
     pub tags_var: Option<Var>,
@@ -67,8 +67,8 @@ pub struct DepNode {
 }
 
 impl DepNode {
-    fn new(output: Symbol, is_phony: bool, is_restat: bool) -> Arc<Mutex<Self>> {
-        Arc::new(Mutex::new(Self {
+    fn new(output: Symbol, is_phony: bool, is_restat: bool) -> Rc<RefCell<Self>> {
+        Rc::new(RefCell::new(Self {
             output,
             cmds: Vec::new(),
             deps: Vec::new(),
@@ -128,7 +128,7 @@ fn apply_output_pattern(r: &Rule, output: Symbol, inputs: &[Symbol]) -> Vec<Symb
 }
 
 struct RuleTrieEntry {
-    rule: Arc<Rule>,
+    rule: Rc<Rule>,
     suffix: Vec<u8>,
 }
 
@@ -145,7 +145,7 @@ impl RuleTrie {
         }
     }
 
-    fn add(&mut self, name: &[u8], rule: Arc<Rule>) {
+    fn add(&mut self, name: &[u8], rule: Rc<Rule>) {
         if name.is_empty() || name.starts_with(b"%") {
             self.rules.push(RuleTrieEntry {
                 rule,
@@ -160,7 +160,7 @@ impl RuleTrie {
             .add(&name[1..], rule)
     }
 
-    fn get(&self, name: &[u8]) -> Vec<Arc<Rule>> {
+    fn get(&self, name: &[u8]) -> Vec<Rc<Rule>> {
         let mut ret = Vec::new();
         for ent in &self.rules {
             if (ent.suffix.is_empty() && name.is_empty()) || name.ends_with(&ent.suffix[1..]) {
@@ -203,18 +203,18 @@ fn is_suffix_rule(output: &Symbol) -> bool {
 
 #[derive(Debug)]
 struct RuleMerger {
-    rules: Vec<Arc<Rule>>,
-    implicit_outputs: Vec<(Symbol, Arc<Mutex<RuleMerger>>)>,
+    rules: Vec<Rc<Rule>>,
+    implicit_outputs: Vec<(Symbol, Rc<RefCell<RuleMerger>>)>,
     validations: Vec<Symbol>,
-    primary_rule: Option<Arc<Rule>>,
-    parent: Option<Arc<Mutex<RuleMerger>>>,
+    primary_rule: Option<Rc<Rule>>,
+    parent: Option<Rc<RefCell<RuleMerger>>>,
     parent_sym: Option<Symbol>,
     is_double_colon: bool,
 }
 
 impl RuleMerger {
-    fn new() -> Arc<Mutex<Self>> {
-        Arc::new(Mutex::new(Self {
+    fn new() -> Rc<RefCell<Self>> {
+        Rc::new(RefCell::new(Self {
             rules: Vec::new(),
             implicit_outputs: Vec::new(),
             validations: Vec::new(),
@@ -225,7 +225,7 @@ impl RuleMerger {
         }))
     }
 
-    fn add_implicit_output(&mut self, output: Symbol, merger: Arc<Mutex<RuleMerger>>) {
+    fn add_implicit_output(&mut self, output: Symbol, merger: Rc<RefCell<RuleMerger>>) {
         self.implicit_outputs.push((output, merger))
     }
 
@@ -237,15 +237,15 @@ impl RuleMerger {
         &mut self,
         output: Symbol,
         p: Symbol,
-        merger: Arc<Mutex<RuleMerger>>,
+        merger: Rc<RefCell<RuleMerger>>,
     ) -> Result<()> {
         {
-            let merger = merger.lock();
+            let merger = merger.borrow_mut();
             if merger.primary_rule.is_none() {
                 error!("*** implicit output `{output}' on phony target `{p}'");
             }
             if let Some(parent) = &self.parent {
-                let parent = parent.lock();
+                let parent = parent.borrow_mut();
                 error_loc!(
                     merger
                         .primary_rule
@@ -273,7 +273,7 @@ impl RuleMerger {
         Ok(())
     }
 
-    fn add_rule(&mut self, output: Symbol, r: Arc<Rule>) -> Result<()> {
+    fn add_rule(&mut self, output: Symbol, r: Rc<Rule>) -> Result<()> {
         if self.rules.is_empty() {
             self.is_double_colon = r.is_double_colon
         } else if self.is_double_colon != r.is_double_colon {
@@ -341,10 +341,10 @@ impl RuleMerger {
     fn fill_dep_node(
         &self,
         output: Symbol,
-        pattern_rule: &Option<Arc<Rule>>,
-        n: &Arc<Mutex<DepNode>>,
+        pattern_rule: &Option<Rc<Rule>>,
+        n: &Rc<RefCell<DepNode>>,
     ) {
-        let mut n = n.lock();
+        let mut n = n.borrow_mut();
         if let Some(primary_rule) = &self.primary_rule {
             assert!(pattern_rule.is_none());
             self.fill_dep_node_from_rule(output, primary_rule, &mut n);
@@ -358,7 +358,7 @@ impl RuleMerger {
 
         for r in &self.rules {
             if let Some(primary_rule) = &self.primary_rule
-                && Arc::ptr_eq(r, primary_rule)
+                && Rc::ptr_eq(r, primary_rule)
             {
                 continue;
             }
@@ -374,7 +374,7 @@ impl RuleMerger {
         for (sym, merger) in &self.implicit_outputs {
             n.implicit_outputs.push(*sym);
             all_outputs.insert(*sym);
-            let merger = merger.lock();
+            let merger = merger.borrow_mut();
             for r in &merger.rules {
                 self.fill_dep_node_from_rule(output, r, &mut n);
             }
@@ -386,19 +386,19 @@ impl RuleMerger {
     }
 }
 
-type SuffixRuleMap = HashMap<Bytes, Vec<Arc<Rule>>>;
+type SuffixRuleMap = HashMap<Bytes, Vec<Rc<Rule>>>;
 
 struct DepBuilder<'a> {
     ev: &'a mut Evaluator,
-    rules: HashMap<Symbol, Arc<Mutex<RuleMerger>>>,
-    rule_vars: HashMap<Symbol, Arc<Vars>>,
-    cur_rule_vars: Option<Arc<Vars>>,
+    rules: HashMap<Symbol, Rc<RefCell<RuleMerger>>>,
+    rule_vars: HashMap<Symbol, Rc<Vars>>,
+    cur_rule_vars: Option<Rc<Vars>>,
 
     implicit_rules: RuleTrie,
     suffix_rules: SuffixRuleMap,
 
     first_rule: Option<Symbol>,
-    done: HashMap<Symbol, Arc<Mutex<DepNode>>>,
+    done: HashMap<Symbol, Rc<RefCell<DepNode>>>,
     phony: HashSet<Symbol>,
     restat: HashSet<Symbol>,
     depfile_var_name: Symbol,
@@ -410,9 +410,9 @@ struct DepBuilder<'a> {
 
 #[derive(Debug)]
 struct PickedRuleInfo {
-    merger: Option<Arc<Mutex<RuleMerger>>>,
-    pattern_rule: Option<Arc<Rule>>,
-    vars: Option<Arc<Vars>>,
+    merger: Option<Rc<RefCell<RuleMerger>>>,
+    pattern_rule: Option<Rc<Rule>>,
+    vars: Option<Rc<Vars>>,
 }
 
 impl<'a> DepBuilder<'a> {
@@ -506,7 +506,7 @@ impl<'a> DepBuilder<'a> {
                 if is_special_target(sym) {
                     continue;
                 }
-                for r in merger.lock().rules.iter() {
+                for r in merger.borrow_mut().rules.iter() {
                     for t in &r.inputs {
                         non_root_targets.insert(*t);
                     }
@@ -529,7 +529,7 @@ impl<'a> DepBuilder<'a> {
 
         let mut nodes = Vec::new();
         for target in targets {
-            let v = Arc::new(Vars::new());
+            let v = Rc::new(Vars::new());
             self.cur_rule_vars = Some(v.clone());
             self.ev.current_scope = Some(v.clone());
             let n = self.build_plan(target, None)?;
@@ -548,7 +548,7 @@ impl<'a> DepBuilder<'a> {
 
     fn get_rule_inputs(&self, s: Symbol) -> Option<(Vec<Symbol>, Loc)> {
         let merger = self.rules.get(&s)?;
-        let merger = merger.lock();
+        let merger = merger.borrow_mut();
         let mut ret = Vec::new();
         assert!(!merger.rules.is_empty());
         for r in &merger.rules {
@@ -563,7 +563,7 @@ impl<'a> DepBuilder<'a> {
     fn populate_rules(&mut self) -> Result<()> {
         // TODO: Is this take necessary, or can we refactor how we pass around ev?
         for rule in std::mem::take(&mut self.ev.rules) {
-            let rule = Arc::new(rule);
+            let rule = Rc::new(rule);
             if rule.outputs.is_empty() {
                 self.populate_implicit_rule(rule)?;
             } else {
@@ -586,10 +586,10 @@ impl<'a> DepBuilder<'a> {
                     self.rules
                         .entry(sym)
                         .or_insert_with(RuleMerger::new)
-                        .lock()
+                        .borrow_mut()
                         .set_implicit_output(sym, symbol, merger.clone())?;
                     merger
-                        .lock()
+                        .borrow_mut()
                         .add_implicit_output(sym, self.rules[&sym].clone());
                 }
             }
@@ -599,7 +599,7 @@ impl<'a> DepBuilder<'a> {
 
                 for validation in word_scanner(&validations) {
                     let sym = intern(validations.slice_ref(trim_leading_curdir(validation)));
-                    merger.lock().add_validation(sym);
+                    merger.borrow_mut().add_validation(sym);
                 }
             }
         }
@@ -633,11 +633,11 @@ impl<'a> DepBuilder<'a> {
         self.suffix_rules
             .entry(output_suffix)
             .or_default()
-            .push(Arc::new(r));
+            .push(Rc::new(r));
         Ok(true)
     }
 
-    fn populate_explicit_rule(&mut self, rule: Arc<Rule>) -> Result<()> {
+    fn populate_explicit_rule(&mut self, rule: Rc<Rule>) -> Result<()> {
         for output in &rule.outputs {
             if self.first_rule.is_none() && !is_special_target(output) {
                 self.first_rule = Some(*output);
@@ -645,7 +645,7 @@ impl<'a> DepBuilder<'a> {
             self.rules
                 .entry(*output)
                 .or_insert_with(RuleMerger::new)
-                .lock()
+                .borrow_mut()
                 .add_rule(*output, rule.clone())?;
             self.populate_suffix_rule(&rule, *output)?;
         }
@@ -669,7 +669,7 @@ impl<'a> DepBuilder<'a> {
         i == b"RCS/%,v" || i == b"RCS/%" || i == b"%,v" || i == b"s.%" || i == b"SCCS/s.%"
     }
 
-    fn populate_implicit_rule(&mut self, rule: Arc<Rule>) -> Result<()> {
+    fn populate_implicit_rule(&mut self, rule: Rc<Rule>) -> Result<()> {
         for output_pattern in &rule.output_patterns {
             let op = output_pattern.as_bytes();
             if op.as_ref() != b"%" || !Self::is_ignorable_implicit_rule(&rule) {
@@ -691,11 +691,11 @@ impl<'a> DepBuilder<'a> {
         Ok(())
     }
 
-    fn lookup_rule_merger(&self, o: Symbol) -> Option<Arc<Mutex<RuleMerger>>> {
+    fn lookup_rule_merger(&self, o: Symbol) -> Option<Rc<RefCell<RuleMerger>>> {
         self.rules.get(&o).cloned()
     }
 
-    fn lookup_rule_vars(&self, o: Symbol) -> Option<Arc<Vars>> {
+    fn lookup_rule_vars(&self, o: Symbol) -> Option<Rc<Vars>> {
         self.rule_vars.get(&o).cloned()
     }
 
@@ -703,8 +703,8 @@ impl<'a> DepBuilder<'a> {
         &mut self,
         rule: &Rule,
         output: Symbol,
-        n: Arc<Mutex<DepNode>>,
-    ) -> Option<Arc<Rule>> {
+        n: Rc<RefCell<DepNode>>,
+    ) -> Option<Rc<Rule>> {
         let output_str = output.as_bytes();
         let mut matched = None;
         for output_pattern in &rule.output_patterns {
@@ -741,33 +741,29 @@ impl<'a> DepBuilder<'a> {
             rule.output_patterns.clear();
             rule.output_patterns.push(matched);
         }
-        Some(Arc::new(rule))
+        Some(Rc::new(rule))
     }
 
-    fn merge_implicit_rule_vars(
-        &self,
-        output: Symbol,
-        vars: Option<Arc<Vars>>,
-    ) -> Option<Arc<Vars>> {
+    fn merge_implicit_rule_vars(&self, output: Symbol, vars: Option<Rc<Vars>>) -> Option<Rc<Vars>> {
         let Some(mut found) = self.rule_vars.get(&output).cloned() else {
             return vars;
         };
         let Some(vars) = vars else {
             return Some(found.clone());
         };
-        let r = Arc::make_mut(&mut found);
+        let r = Rc::make_mut(&mut found);
         r.merge_from(&vars);
         Some(found)
     }
 
-    fn pick_rule(&mut self, output: Symbol, n: &Arc<Mutex<DepNode>>) -> Option<PickedRuleInfo> {
+    fn pick_rule(&mut self, output: Symbol, n: &Rc<RefCell<DepNode>>) -> Option<PickedRuleInfo> {
         let rule_merger = self.lookup_rule_merger(output);
         let vars = self.lookup_rule_vars(output);
         if let Some(rule_merger) = &rule_merger
-            && rule_merger.lock().primary_rule.is_some()
+            && rule_merger.borrow().primary_rule.is_some()
         {
             let mut vars = vars;
-            for (sym, _) in &rule_merger.lock().implicit_outputs {
+            for (sym, _) in &rule_merger.borrow().implicit_outputs {
                 vars = self.merge_implicit_rule_vars(*sym, vars);
             }
             return Some(PickedRuleInfo {
@@ -876,7 +872,7 @@ impl<'a> DepBuilder<'a> {
         &mut self,
         mut output: Symbol,
         needed_by: Option<Symbol>,
-    ) -> Result<Arc<Mutex<DepNode>>> {
+    ) -> Result<Rc<RefCell<DepNode>>> {
         log!("BuildPlan: {output} for {needed_by:?}");
 
         if let Some(found) = self.done.get(&output) {
@@ -894,11 +890,11 @@ impl<'a> DepBuilder<'a> {
             return Ok(n);
         };
         if let Some(merger) = &picked_rule_info.merger
-            && merger.lock().parent.is_some()
+            && merger.borrow().parent.is_some()
         {
-            output = merger.lock().parent_sym.unwrap();
+            output = merger.borrow().parent_sym.unwrap();
             self.done.insert(output, n.clone());
-            n.lock().output = output;
+            n.borrow_mut().output = output;
             let Some(new_picked_rule_info) = self.pick_rule(output, &n) else {
                 return Ok(n);
             };
@@ -910,18 +906,18 @@ impl<'a> DepBuilder<'a> {
         picked_rule_info
             .merger
             .unwrap_or_else(RuleMerger::new)
-            .lock()
+            .borrow_mut()
             .fill_dep_node(output, &picked_rule_info.pattern_rule, &n);
 
         let mut sv = Vec::new();
         let frame = self.ev.enter(
             FrameType::Dependency,
             output_str.clone(),
-            n.lock().loc.clone().unwrap_or_default(),
+            n.borrow_mut().loc.clone().unwrap_or_default(),
         );
 
         if let Some(vars) = &picked_rule_info.vars {
-            for (name, var) in vars.0.lock().iter() {
+            for (name, var) in vars.0.borrow_mut().iter() {
                 let mut new_var = var.clone();
                 match var.read().assign_op {
                     Some(AssignOp::PlusEq) => {
@@ -935,7 +931,7 @@ impl<'a> DepBuilder<'a> {
                                 s.freeze(),
                                 old_var.read().origin(),
                                 frame.current(),
-                                n.lock().loc.clone(),
+                                n.borrow_mut().loc.clone(),
                             );
                         }
                     }
@@ -948,14 +944,14 @@ impl<'a> DepBuilder<'a> {
                 }
 
                 if *name == self.depfile_var_name {
-                    n.lock().depfile_var = Some(new_var);
+                    n.borrow_mut().depfile_var = Some(new_var);
                 } else if *name == self.implicit_outputs_var_name
                     || *name == self.validations_var_name
                 {
                 } else if *name == self.ninja_pool_var_name {
-                    n.lock().ninja_pool_var = Some(new_var);
+                    n.borrow_mut().ninja_pool_var = Some(new_var);
                 } else if *name == self.tags_var_name {
-                    n.lock().tags_var = Some(new_var);
+                    n.borrow_mut().tags_var = Some(new_var);
                 } else {
                     sv.push(ScopedVar::new(
                         self.cur_rule_vars.clone().unwrap(),
@@ -966,21 +962,21 @@ impl<'a> DepBuilder<'a> {
             }
         }
 
-        if FLAGS.warn_phony_looks_real && n.lock().is_phony && output_str.contains(&b'/') {
+        if FLAGS.warn_phony_looks_real && n.borrow_mut().is_phony && output_str.contains(&b'/') {
             if FLAGS.werror_phony_looks_real {
                 error_loc!(
-                    n.lock().loc.as_ref(),
+                    n.borrow_mut().loc.as_ref(),
                     "*** PHONY target \"{output}\" looks like a real file (contains a \"/\")"
                 );
             } else {
                 warn_loc!(
-                    n.lock().loc.as_ref(),
+                    n.borrow_mut().loc.as_ref(),
                     "warning: PHONY target \"{output}\" looks like a real file (contains a \"/\")"
                 );
             }
         }
 
-        if !FLAGS.writable.is_empty() && !n.lock().is_phony {
+        if !FLAGS.writable.is_empty() && !n.borrow_mut().is_phony {
             let mut found = false;
             for w in &FLAGS.writable {
                 if output_str.starts_with(w.as_bytes()) {
@@ -991,38 +987,39 @@ impl<'a> DepBuilder<'a> {
             if !found {
                 if FLAGS.werror_writable {
                     error_loc!(
-                        n.lock().loc.as_ref(),
+                        n.borrow_mut().loc.as_ref(),
                         "*** writing to readonly directory: \"{output}\""
                     );
                 } else {
                     warn_loc!(
-                        n.lock().loc.as_ref(),
+                        n.borrow_mut().loc.as_ref(),
                         "warning: writing to readonly directory: \"{output}\""
                     );
                 }
             }
         }
 
-        let implicit_outputs = n.lock().implicit_outputs.clone();
+        let implicit_outputs = n.borrow_mut().implicit_outputs.clone();
         for output in implicit_outputs {
             self.done.insert(output, n.clone());
 
             let output_str = output.as_bytes();
-            if FLAGS.warn_phony_looks_real && n.lock().is_phony && output_str.contains(&b'/') {
+            if FLAGS.warn_phony_looks_real && n.borrow_mut().is_phony && output_str.contains(&b'/')
+            {
                 if FLAGS.werror_phony_looks_real {
                     error_loc!(
-                        n.lock().loc.as_ref(),
+                        n.borrow_mut().loc.as_ref(),
                         "*** PHONY target \"{output}\" looks like a real file (contains a \"/\")"
                     );
                 } else {
                     warn_loc!(
-                        n.lock().loc.as_ref(),
+                        n.borrow_mut().loc.as_ref(),
                         "warning: PHONY target \"{output}\" looks like a real file (contains a \"/\")"
                     );
                 }
             }
 
-            if !FLAGS.writable.is_empty() && !n.lock().is_phony {
+            if !FLAGS.writable.is_empty() && !n.borrow_mut().is_phony {
                 let mut found = false;
                 for w in &FLAGS.writable {
                     if output_str.starts_with(w.as_bytes()) {
@@ -1033,12 +1030,12 @@ impl<'a> DepBuilder<'a> {
                 if !found {
                     if FLAGS.werror_writable {
                         error_loc!(
-                            n.lock().loc.as_ref(),
+                            n.borrow_mut().loc.as_ref(),
                             "*** writing to readonly directory: \"{output}\""
                         );
                     } else {
                         warn_loc!(
-                            n.lock().loc.as_ref(),
+                            n.borrow_mut().loc.as_ref(),
                             "warning: writing to readonly directory: \"{output}\""
                         );
                     }
@@ -1046,56 +1043,56 @@ impl<'a> DepBuilder<'a> {
             }
         }
 
-        let actual_inputs = n.lock().actual_inputs.clone();
+        let actual_inputs = n.borrow_mut().actual_inputs.clone();
         for input in actual_inputs {
             let c = self.build_plan(input, Some(output))?;
-            n.lock().deps.push((input, c.clone()));
+            n.borrow_mut().deps.push((input, c.clone()));
 
-            let mut is_phony = c.lock().is_phony;
-            if !is_phony && !c.lock().has_rule && FLAGS.top_level_phony {
+            let mut is_phony = c.borrow_mut().is_phony;
+            if !is_phony && !c.borrow_mut().has_rule && FLAGS.top_level_phony {
                 is_phony = !input.as_bytes().contains(&b'/');
             }
-            if !n.lock().is_phony && is_phony {
+            if !n.borrow_mut().is_phony && is_phony {
                 if FLAGS.werror_real_to_phony {
                     error_loc!(
-                        n.lock().loc.as_ref(),
+                        n.borrow_mut().loc.as_ref(),
                         "*** real file \"{output}\" depends on PHONY target \"{input}\""
                     );
                 } else if FLAGS.warn_real_to_phony {
                     warn_loc!(
-                        n.lock().loc.as_ref(),
+                        n.borrow_mut().loc.as_ref(),
                         "warning: real file \"{output}\" depends on PHONY target \"{input}\""
                     );
                 }
             }
         }
 
-        let actual_order_only_inputs = n.lock().actual_order_only_inputs.clone();
+        let actual_order_only_inputs = n.borrow_mut().actual_order_only_inputs.clone();
         for input in actual_order_only_inputs {
             let c = self.build_plan(input, Some(output))?;
-            n.lock().order_onlys.push((input, c));
+            n.borrow_mut().order_onlys.push((input, c));
         }
 
-        let actual_validations = n.lock().actual_validations.clone();
+        let actual_validations = n.borrow_mut().actual_validations.clone();
         for validation in actual_validations {
             if !FLAGS.use_ninja_validations {
                 error_loc!(
-                    n.lock().loc.as_ref(),
+                    n.borrow_mut().loc.as_ref(),
                     ".KATI_VALIDATIONS not allowed without --use_ninja_validations"
                 );
             }
             let c = self.build_plan(validation, Some(output))?;
-            n.lock().validations.push((validation, c));
+            n.borrow_mut().validations.push((validation, c));
         }
 
         // Block on werror_writable/werror_phony_looks_real, because otherwise we
         // can't rely on is_phony being valid for this check.
-        if !n.lock().is_phony
-            && n.lock().cmds.is_empty()
+        if !n.borrow_mut().is_phony
+            && n.borrow_mut().cmds.is_empty()
             && FLAGS.werror_writable
             && FLAGS.werror_phony_looks_real
         {
-            let n = n.lock();
+            let n = n.borrow_mut();
             if n.deps.is_empty() && n.order_onlys.is_empty() {
                 if FLAGS.werror_real_no_cmds_or_deps {
                     error_loc!(
@@ -1136,13 +1133,13 @@ impl<'a> DepBuilder<'a> {
         }
 
         {
-            let mut n = n.lock();
+            let mut n = n.borrow_mut();
             n.has_rule = true;
             n.is_default_target = self.first_rule == Some(output);
             if let Some(cur_rule_vars) = &self.cur_rule_vars {
                 let v = Vars::new();
                 v.merge_from(cur_rule_vars);
-                n.rule_vars = Some(Arc::new(v));
+                n.rule_vars = Some(Rc::new(v));
             } else {
                 n.rule_vars = None
             }

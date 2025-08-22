@@ -14,21 +14,19 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
+use std::rc::Rc;
 use std::time::SystemTime;
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
 
 use anyhow::Result;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use memchr::{memchr2, memmem};
-use parking_lot::Mutex;
+use std::cell::RefCell;
 
 use crate::func::CommandOp;
 use crate::io::{dump_int, dump_string, dump_systemtime, dump_usize, dump_vec_string};
@@ -141,7 +139,7 @@ fn get_depfile_from_command(cmd: &mut BytesMut) -> Result<Option<Bytes>> {
 }
 
 struct NinjaNode {
-    node: Arc<Mutex<DepNode>>,
+    node: Rc<RefCell<DepNode>>,
     commands: Vec<Command>,
     rule_id: Option<usize>,
 }
@@ -156,7 +154,7 @@ struct NinjaGenerator<'a> {
     kati_binary: OsString,
     start_time: SystemTime,
     nodes: Vec<NinjaNode>,
-    default_target: Mutex<Option<Arc<Mutex<DepNode>>>>,
+    default_target: RefCell<Option<Rc<RefCell<DepNode>>>>,
 }
 
 impl<'a> NinjaGenerator<'a> {
@@ -174,7 +172,7 @@ impl<'a> NinjaGenerator<'a> {
             kati_binary: OsString::from(std::env::current_exe().unwrap()),
             start_time,
             nodes: Vec::new(),
-            default_target: Mutex::new(None),
+            default_target: RefCell::new(None),
         })
     }
 
@@ -199,8 +197,8 @@ impl<'a> NinjaGenerator<'a> {
         Ok(())
     }
 
-    fn populate_ninja_node(&mut self, node: &Arc<Mutex<DepNode>>) -> Result<()> {
-        let output = node.lock().output;
+    fn populate_ninja_node(&mut self, node: &Rc<RefCell<DepNode>>) -> Result<()> {
+        let output = node.borrow_mut().output;
         if self.done.contains(&output) {
             return Ok(());
         }
@@ -209,7 +207,7 @@ impl<'a> NinjaGenerator<'a> {
         let has_rule;
         let is_phony;
         {
-            let node = node.lock();
+            let node = node.borrow_mut();
             loc = node.loc.clone();
             has_rule = node.has_rule;
             is_phony = node.is_phony;
@@ -246,17 +244,17 @@ impl<'a> NinjaGenerator<'a> {
             rule_id,
         });
 
-        let deps = node.lock().deps.clone();
+        let deps = node.borrow_mut().deps.clone();
         for (_symbol, depnode) in deps {
             self.populate_ninja_node(&depnode)?;
         }
 
-        let order_onlys = node.lock().order_onlys.clone();
+        let order_onlys = node.borrow_mut().order_onlys.clone();
         for (_symbol, depnode) in order_onlys {
             self.populate_ninja_node(&depnode)?;
         }
 
-        let validations = node.lock().validations.clone();
+        let validations = node.borrow_mut().validations.clone();
         for (_symbol, depnode) in validations {
             self.populate_ninja_node(&depnode)?;
         }
@@ -458,7 +456,7 @@ impl<'a> NinjaGenerator<'a> {
     }
 
     fn emit_node(&mut self, nn: &NinjaNode, out: &mut impl std::io::Write) -> Result<()> {
-        let node = nn.node.lock();
+        let node = nn.node.borrow_mut();
         let commands = &nn.commands;
 
         let mut rule_name = "phony".to_string();
@@ -610,7 +608,7 @@ impl<'a> NinjaGenerator<'a> {
             }
         }
         if node.is_default_target {
-            *self.default_target.lock() = Some(nn.node.clone());
+            *self.default_target.borrow_mut() = Some(nn.node.clone());
         }
         Ok(())
     }
@@ -658,7 +656,12 @@ impl<'a> NinjaGenerator<'a> {
             write!(out, "\ndefault ")?;
             if FLAGS.targets.is_empty() || FLAGS.gen_all_targets {
                 out.write_all(&Self::escape_build_target(
-                    self.default_target.lock().as_ref().unwrap().lock().output,
+                    self.default_target
+                        .borrow_mut()
+                        .as_ref()
+                        .unwrap()
+                        .borrow_mut()
+                        .output,
                 ))?;
             } else {
                 let mut empty = true;
@@ -673,7 +676,7 @@ impl<'a> NinjaGenerator<'a> {
             out.write_all(b"\n")?;
         }
 
-        let mut used_env_vars = USED_ENV_VARS.lock().clone();
+        let mut used_env_vars = USED_ENV_VARS.with_borrow_mut(|env| env.clone());
         // PATH changes $(shell).
         used_env_vars.insert(intern("PATH"));
         for e in used_env_vars {
@@ -754,57 +757,61 @@ impl<'a> NinjaGenerator<'a> {
                 dump_string(&mut out, value.as_bytes())?;
             }
 
-            let globs = crate::fileutil::GLOB_CACHE.lock();
-            let globs: Vec<(&Bytes, &crate::fileutil::GlobResults)> = globs
-                .iter()
-                .filter_map(|(key, files)| {
-                    if files.is_err() {
-                        return None;
-                    }
-                    Some((key, files))
-                })
-                .collect();
-            dump_usize(&mut out, globs.len())?;
-            for (key, files) in globs.iter() {
-                dump_string(&mut out, key)?;
-                let Ok(files) = files.as_ref() else { continue };
-                dump_vec_string(&mut out, files)?;
-            }
+            crate::fileutil::GLOB_CACHE.with_borrow_mut(|globs| -> Result<()> {
+                let globs: Vec<(&Bytes, &crate::fileutil::GlobResults)> = globs
+                    .iter()
+                    .filter_map(|(key, files)| {
+                        if files.is_err() {
+                            return None;
+                        }
+                        Some((key, files))
+                    })
+                    .collect();
+                dump_usize(&mut out, globs.len())?;
+                for (key, files) in globs.iter() {
+                    dump_string(&mut out, key)?;
+                    let Ok(files) = files.as_ref() else { continue };
+                    dump_vec_string(&mut out, files)?;
+                }
+                Ok(())
+            })?;
 
-            let crs = crate::func::COMMAND_RESULTS.lock();
-            dump_usize(&mut out, crs.len())?;
-            for cr in crs.iter() {
-                dump_int(&mut out, cr.op.as_int())?;
-                dump_string(&mut out, &cr.shell)?;
-                dump_string(&mut out, &cr.shellflag)?;
-                dump_string(&mut out, &cr.cmd)?;
-                dump_string(&mut out, &cr.result)?;
-                dump_string(&mut out, &cr.loc.filename.as_bytes())?;
-                dump_int(&mut out, cr.loc.line)?;
+            crate::func::COMMAND_RESULTS.with_borrow(|crs| -> Result<()> {
+                dump_usize(&mut out, crs.len())?;
+                for cr in crs.iter() {
+                    dump_int(&mut out, cr.op.as_int())?;
+                    dump_string(&mut out, &cr.shell)?;
+                    dump_string(&mut out, &cr.shellflag)?;
+                    dump_string(&mut out, &cr.cmd)?;
+                    dump_string(&mut out, &cr.result)?;
+                    dump_string(&mut out, &cr.loc.filename.as_bytes())?;
+                    dump_int(&mut out, cr.loc.line)?;
 
-                if cr.op == CommandOp::Find {
-                    let fc = cr.find.as_ref().unwrap();
-                    let chdir = fc.chdir.clone().unwrap_or_else(Bytes::new);
-                    let mut missing_dirs = Vec::new();
-                    for fd in &fc.finddirs {
-                        let d = concat_dir(&chdir, fd);
-                        if !std::fs::exists(OsStr::from_bytes(&d)).unwrap_or(false) {
-                            missing_dirs.push(d);
+                    if cr.op == CommandOp::Find {
+                        let fc = cr.find.as_ref().unwrap();
+                        let chdir = fc.chdir.clone().unwrap_or_else(Bytes::new);
+                        let mut missing_dirs = Vec::new();
+                        for fd in &fc.finddirs {
+                            let d = concat_dir(&chdir, fd);
+                            if !std::fs::exists(OsStr::from_bytes(&d)).unwrap_or(false) {
+                                missing_dirs.push(d);
+                            }
+                        }
+                        dump_vec_string(&mut out, &missing_dirs)?;
+
+                        dump_usize(&mut out, fc.found_files.borrow_mut().len())?;
+                        for s in fc.found_files.borrow_mut().iter() {
+                            dump_string(&mut out, &concat_dir(&chdir, s))?;
+                        }
+
+                        dump_usize(&mut out, fc.read_dirs.borrow_mut().len())?;
+                        for s in fc.read_dirs.borrow_mut().iter() {
+                            dump_string(&mut out, &concat_dir(&chdir, s))?;
                         }
                     }
-                    dump_vec_string(&mut out, &missing_dirs)?;
-
-                    dump_usize(&mut out, fc.found_files.lock().len())?;
-                    for s in fc.found_files.lock().iter() {
-                        dump_string(&mut out, &concat_dir(&chdir, s))?;
-                    }
-
-                    dump_usize(&mut out, fc.read_dirs.lock().len())?;
-                    for s in fc.read_dirs.lock().iter() {
-                        dump_string(&mut out, &concat_dir(&chdir, s))?;
-                    }
                 }
-            }
+                Ok(())
+            })?;
 
             dump_string(&mut out, orig_args)?;
         }

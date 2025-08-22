@@ -17,28 +17,29 @@ limitations under the License.
 use std::{
     collections::{HashMap, HashSet},
     ffi::{OsStr, OsString},
-    sync::{Arc, LazyLock},
+    rc::Rc,
 };
 
 use anyhow::Result;
-use parking_lot::Mutex;
+use std::cell::RefCell;
 
 use crate::file::Makefile;
 
-static CACHE: LazyLock<Mutex<MakefileCacheManager>> = LazyLock::new(|| {
-    Mutex::new(MakefileCacheManager {
-        cache: HashMap::new(),
-        extra_file_deps: HashSet::new(),
-    })
-});
+thread_local! {
+    static CACHE: RefCell<MakefileCacheManager> =
+        RefCell::new(MakefileCacheManager {
+            cache: HashMap::new(),
+            extra_file_deps: HashSet::new(),
+        });
+}
 
 struct MakefileCacheManager {
-    cache: HashMap<OsString, Option<Arc<Makefile>>>,
+    cache: HashMap<OsString, Option<Rc<Makefile>>>,
     extra_file_deps: HashSet<OsString>,
 }
 
 impl MakefileCacheManager {
-    fn get_makefile(&mut self, filename: &OsStr) -> Result<Option<Arc<Makefile>>> {
+    fn get_makefile(&mut self, filename: &OsStr) -> Result<Option<Rc<Makefile>>> {
         if let Some(mk) = self.cache.get(filename) {
             return Ok(mk.clone());
         }
@@ -49,22 +50,23 @@ impl MakefileCacheManager {
     }
 }
 
-pub fn get_makefile(filename: &OsStr) -> Result<Option<Arc<Makefile>>> {
-    CACHE.lock().get_makefile(filename)
+pub fn get_makefile(filename: &OsStr) -> Result<Option<Rc<Makefile>>> {
+    CACHE.with_borrow_mut(|c| c.get_makefile(filename))
 }
 
 pub fn add_extra_file_dep(filename: OsString) {
-    CACHE.lock().extra_file_deps.insert(filename);
+    CACHE.with_borrow_mut(|c| c.extra_file_deps.insert(filename));
 }
 
 pub fn get_all_filenames() -> HashSet<OsString> {
-    let manager = CACHE.lock();
-    let mut ret = HashSet::new();
-    for p in manager.cache.keys() {
-        ret.insert(p.clone());
-    }
-    for f in &manager.extra_file_deps {
-        ret.insert(f.clone());
-    }
-    ret
+    CACHE.with_borrow_mut(|manager| {
+        let mut ret = HashSet::new();
+        for p in manager.cache.keys() {
+            ret.insert(p.clone());
+        }
+        for f in &manager.extra_file_deps {
+            ret.insert(f.clone());
+        }
+        ret
+    })
 }

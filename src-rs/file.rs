@@ -14,11 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::{ffi::OsStr, os::unix::ffi::OsStrExt, sync::Arc};
+use std::{ffi::OsStr, os::unix::ffi::OsStrExt, rc::Rc};
 
 use anyhow::Result;
 use bytes::Bytes;
-use parking_lot::Mutex;
+use std::cell::RefCell;
 
 use crate::{
     parser::parse_file,
@@ -28,11 +28,11 @@ use crate::{
 
 pub struct Makefile {
     pub filename: Symbol,
-    pub stmts: Arc<Mutex<Vec<Stmt>>>,
+    pub stmts: Rc<RefCell<Vec<Stmt>>>,
 }
 
 impl Makefile {
-    pub fn from_file(filename: &OsStr) -> Result<Option<Arc<Makefile>>> {
+    pub fn from_file(filename: &OsStr) -> Result<Option<Rc<Makefile>>> {
         if !std::fs::exists(filename)? {
             return Ok(None);
         }
@@ -42,6 +42,6 @@ impl Makefile {
         let filename = intern(filename.as_bytes().to_vec());
         let stmts = parse_file(&buf, filename)?;
 
-        Ok(Some(Arc::new(Makefile { filename, stmts })))
+        Ok(Some(Rc::new(Makefile { filename, stmts })))
     }
 }

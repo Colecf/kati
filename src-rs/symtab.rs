@@ -15,10 +15,10 @@ limitations under the License.
 */
 
 use std::{
+    cell::LazyCell,
     collections::HashMap,
     fmt::{Debug, Display},
     num::NonZeroUsize,
-    sync::LazyLock,
     vec,
 };
 
@@ -28,53 +28,62 @@ use crate::{
 };
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
-use parking_lot::Mutex;
+use std::cell::RefCell;
 
-static SYMTAB: LazyLock<Mutex<Symtab>> = LazyLock::new(|| Mutex::new(Symtab::new()));
+thread_local! {
+    static SYMTAB: RefCell<Symtab> = RefCell::new(Symtab::new());
 
-pub static SHELL_SYM: LazyLock<Symbol> = LazyLock::new(|| intern("SHELL"));
-pub static ALLOW_RULES_SYM: LazyLock<Symbol> = LazyLock::new(|| intern(".KATI_ALLOW_RULES"));
-pub static KATI_READONLY_SYM: LazyLock<Symbol> = LazyLock::new(|| intern(".KATI_READONLY"));
-pub static VARIABLES_SYM: LazyLock<Symbol> = LazyLock::new(|| intern(".VARIABLES"));
-pub static KATI_SYMBOLS_SYM: LazyLock<Symbol> = LazyLock::new(|| intern(".KATI_SYMBOLS"));
-pub static MAKEFILE_LIST: LazyLock<Symbol> = LazyLock::new(|| intern("MAKEFILE_LIST"));
+    // These need to be thread-local too because they're essentially tied to the lifetime of SYMTAB
+    pub static SHELL_SYM: LazyCell<Symbol> = LazyCell::new(|| intern("SHELL"));
+    pub static ALLOW_RULES_SYM: LazyCell<Symbol> = LazyCell::new(|| intern(".KATI_ALLOW_RULES"));
+    pub static KATI_READONLY_SYM: LazyCell<Symbol> = LazyCell::new(|| intern(".KATI_READONLY"));
+    pub static VARIABLES_SYM: LazyCell<Symbol> = LazyCell::new(|| intern(".VARIABLES"));
+    pub static KATI_SYMBOLS_SYM: LazyCell<Symbol> = LazyCell::new(|| intern(".KATI_SYMBOLS"));
+    pub static MAKEFILE_LIST: LazyCell<Symbol> = LazyCell::new(|| intern("MAKEFILE_LIST"));
+}
+
+// Helper trait to avoid the awkward syntax of getting the symbol out of a thread local
+pub trait ThreadLocalHelpers {
+    fn get_symbol(&'static self) -> Symbol;
+}
+
+impl ThreadLocalHelpers for std::thread::LocalKey<LazyCell<Symbol>> {
+    fn get_symbol(&'static self) -> Symbol {
+        self.with(|x| *LazyCell::force(x))
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Symbol(NonZeroUsize);
 
 impl Display for Symbol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let r = SYMTAB.lock();
-        write!(f, "{}", String::from_utf8_lossy(&r.symbols[self.0.get()]))
+        SYMTAB
+            .with_borrow_mut(|r| write!(f, "{}", String::from_utf8_lossy(&r.symbols[self.0.get()])))
     }
 }
 
 impl Debug for Symbol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let r = SYMTAB.lock();
-        write!(f, "{:?}({})", r.symbols[self.0.get()], self.0.get())
+        SYMTAB.with_borrow_mut(|r| write!(f, "{:?}({})", r.symbols[self.0.get()], self.0.get()))
     }
 }
 
 impl Symbol {
     pub fn as_bytes(&self) -> Bytes {
-        let r = SYMTAB.lock();
-        r.symbols[self.0.get()].clone()
+        SYMTAB.with_borrow_mut(|r| r.symbols[self.0.get()].clone())
     }
 
     pub fn peek_global_var(&self) -> Option<Var> {
-        let r = SYMTAB.lock();
-        r.symbol_data.get(self.0.get())?.clone()
+        SYMTAB.with_borrow_mut(|r| r.symbol_data.get(self.0.get())?.clone())
     }
 
     pub fn get_global_var(&self) -> Option<Var> {
-        let v = {
-            let r = SYMTAB.lock();
-            r.symbol_data.get(self.0.get())?.clone()?
-        };
+        let v =
+            SYMTAB.with_borrow_mut(|r| r.symbol_data.get(self.0.get()).map(|x| x.clone()))??;
         match v.read().origin() {
             VarOrigin::Environment | VarOrigin::EnvironmentOverride => {
-                crate::var::USED_ENV_VARS.lock().insert(*self);
+                crate::var::USED_ENV_VARS.with_borrow_mut(|vars| vars.insert(*self));
             }
             _ => {}
         }
@@ -87,8 +96,7 @@ impl Symbol {
         is_override: bool,
         readonly: Option<&mut bool>,
     ) -> Result<()> {
-        let mut r = SYMTAB.lock();
-        r.set_global_var(self, var, is_override, readonly)
+        SYMTAB.with_borrow_mut(|r| r.set_global_var(self, var, is_override, readonly))
     }
 }
 
@@ -100,24 +108,27 @@ pub struct ScopedGlobalVar {
 impl ScopedGlobalVar {
     pub fn new(sym: Symbol, var: Var) -> Result<Self> {
         let orig = sym.peek_global_var();
-        let mut symtab = SYMTAB.lock();
-        let idx = sym.0.get();
-        if idx >= symtab.symbol_data.len() {
-            symtab.symbol_data.resize(idx + 1, None);
-        }
-        symtab.symbol_data[idx] = Some(var);
-        Ok(Self { sym, orig })
+        SYMTAB.with_borrow_mut(|symtab| {
+            let idx = sym.0.get();
+            if idx >= symtab.symbol_data.len() {
+                symtab.symbol_data.resize(idx + 1, None);
+            }
+            symtab.symbol_data[idx] = Some(var);
+            Ok(Self { sym, orig })
+        })
     }
 }
 
 impl Drop for ScopedGlobalVar {
     fn drop(&mut self) {
-        let mut r = SYMTAB.lock();
-        let idx = self.sym.0.get();
-        r.symbol_data[idx] = self.orig.clone();
+        SYMTAB.with_borrow_mut(|r| {
+            let idx = self.sym.0.get();
+            r.symbol_data[idx] = self.orig.clone();
+        })
     }
 }
 
+#[derive(Debug)]
 struct Symtab {
     symbols: Vec<Bytes>,
     symbol_data: Vec<Option<Var>>,
@@ -226,8 +237,7 @@ impl Symtab {
 }
 
 pub fn intern<T: Into<Bytes> + AsRef<[u8]>>(s: T) -> Symbol {
-    let mut w = SYMTAB.lock();
-    w.intern(s)
+    SYMTAB.with_borrow_mut(|w| w.intern(s))
 }
 
 pub fn join_symbols(symbols: &[Symbol], sep: &[u8]) -> Bytes {
@@ -245,23 +255,23 @@ pub fn join_symbols(symbols: &[Symbol], sep: &[u8]) -> Bytes {
 }
 
 pub fn get_symbol_names<T: Fn(Var) -> bool>(filter: T) -> Vec<(Symbol, Bytes)> {
-    let s = SYMTAB.lock();
-    s.symbols
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, str)| {
-            let var = s.symbol_data.get(idx)?.clone()?;
-            if !filter(var) {
-                return None;
-            }
-            Some((Symbol(NonZeroUsize::new(idx).unwrap()), str.clone()))
-        })
-        .collect::<Vec<_>>()
+    SYMTAB.with_borrow(|s| {
+        s.symbols
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, str)| {
+                let var = s.symbol_data.get(idx)?.clone()?;
+                if !filter(var) {
+                    return None;
+                }
+                Some((Symbol(NonZeroUsize::new(idx).unwrap()), str.clone()))
+            })
+            .collect::<Vec<_>>()
+    })
 }
 
 pub fn symbol_count() -> usize {
-    let s = SYMTAB.lock();
-    s.symbols.len()
+    SYMTAB.with_borrow(|s| s.symbols.len())
 }
 
 #[cfg(test)]

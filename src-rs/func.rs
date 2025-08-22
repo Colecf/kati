@@ -21,12 +21,13 @@ use std::{
     fs::File,
     io::Write,
     os::unix::ffi::{OsStrExt, OsStringExt},
-    sync::{Arc, LazyLock},
+    rc::Rc,
+    sync::LazyLock,
 };
 
 use anyhow::Result;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use parking_lot::Mutex;
+use std::cell::RefCell;
 
 use crate::{
     collect_stats, collect_stats_with_slow_report, error_loc,
@@ -49,7 +50,7 @@ use crate::{
     warn_loc,
 };
 
-type MakeFuncImpl = fn(&[Arc<Value>], &mut Evaluator, &mut dyn BufMut) -> Result<()>;
+type MakeFuncImpl = fn(&[Rc<Value>], &mut Evaluator, &mut dyn BufMut) -> Result<()>;
 
 pub struct FuncInfo {
     pub name: &'static [u8],
@@ -133,7 +134,7 @@ fn strip_shell_comment(cmd: Bytes) -> Bytes {
     res.into()
 }
 
-fn patsubst_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn patsubst_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let pat_str = args[0].eval_to_buf(ev)?;
     let repl = args[1].eval_to_buf(ev)?;
     let s = args[2].eval_to_buf(ev)?;
@@ -146,7 +147,7 @@ fn patsubst_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) 
     Ok(())
 }
 
-fn strip_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn strip_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let s = args[0].eval_to_buf(ev)?;
     let mut ww = WordWriter::new(out);
     for tok in word_scanner(&s) {
@@ -155,7 +156,7 @@ fn strip_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> 
     Ok(())
 }
 
-fn subst_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn subst_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let pat = args[0].eval_to_buf(ev)?;
     let repl = args[1].eval_to_buf(ev)?;
     let s = args[2].eval_to_buf(ev)?;
@@ -178,7 +179,7 @@ fn subst_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> 
     Ok(())
 }
 
-fn findstring_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn findstring_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let find = args[0].eval_to_buf(ev)?;
     let f = memchr::memmem::Finder::new(&find);
     let haystack = args[1].eval_to_buf(ev)?;
@@ -188,7 +189,7 @@ fn findstring_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut
     Ok(())
 }
 
-fn filter_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn filter_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let pat_buf = args[0].eval_to_buf(ev)?;
     let text = args[1].eval_to_buf(ev)?;
     let pats: Vec<Pattern> = word_scanner(&pat_buf)
@@ -206,7 +207,7 @@ fn filter_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) ->
     Ok(())
 }
 
-fn filter_out_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn filter_out_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let pat_buf = args[0].eval_to_buf(ev)?;
     let text = args[1].eval_to_buf(ev)?;
     let pats: Vec<Pattern> = word_scanner(&pat_buf)
@@ -228,7 +229,7 @@ fn filter_out_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut
     Ok(())
 }
 
-fn sort_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn sort_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let list = args[0].eval_to_buf(ev)?;
     collect_stats!("func sort time");
     let mut toks: Vec<&[u8]> = word_scanner(&list).collect();
@@ -249,7 +250,7 @@ fn get_numeric_value_for_func(buf: &[u8]) -> Result<usize> {
     Ok(s.parse::<usize>()?)
 }
 
-fn word_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn word_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let n_str = args[0].eval_to_buf(ev)?;
     let Ok(mut n) = get_numeric_value_for_func(&n_str) else {
         error_loc!(
@@ -276,7 +277,7 @@ fn word_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> R
     Ok(())
 }
 
-fn wordlist_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn wordlist_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let s_str = args[0].eval_to_buf(ev)?;
     let Ok(si) = get_numeric_value_for_func(&s_str) else {
         error_loc!(
@@ -318,14 +319,14 @@ fn wordlist_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) 
     Ok(())
 }
 
-fn words_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn words_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let text = args[0].eval_to_buf(ev)?;
     let n = word_scanner(&text).count();
     out.put_slice(format!("{n}").as_bytes());
     Ok(())
 }
 
-fn firstword_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn firstword_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let text = args[0].eval_to_buf(ev)?;
     if let Some(tok) = word_scanner(&text).next() {
         out.put_slice(tok);
@@ -333,7 +334,7 @@ fn firstword_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut)
     Ok(())
 }
 
-fn lastword_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn lastword_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let text = args[0].eval_to_buf(ev)?;
     if let Some(tok) = word_scanner(&text).last() {
         out.put_slice(tok);
@@ -341,7 +342,7 @@ fn lastword_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) 
     Ok(())
 }
 
-fn join_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn join_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let list1 = args[0].eval_to_buf(ev)?;
     let list2 = args[1].eval_to_buf(ev)?;
     let mut ws1 = word_scanner(&list1);
@@ -361,7 +362,7 @@ fn join_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> R
     Ok(())
 }
 
-fn wildcard_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn wildcard_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let pat = args[0].eval_to_buf(ev)?;
     collect_stats!("func wildcard time");
     // Note GNU make does not delay the execution of $(wildcard) so we
@@ -379,7 +380,7 @@ fn wildcard_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) 
     Ok(())
 }
 
-fn dir_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn dir_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let text = args[0].eval_to_buf(ev)?;
     let mut ww = WordWriter::new(out);
     for tok in word_scanner(&text) {
@@ -390,7 +391,7 @@ fn dir_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Re
     Ok(())
 }
 
-fn notdir_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn notdir_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let text = args[0].eval_to_buf(ev)?;
     let mut ww = WordWriter::new(out);
     for tok in word_scanner(&text) {
@@ -403,7 +404,7 @@ fn notdir_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) ->
     Ok(())
 }
 
-fn suffix_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn suffix_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let text = args[0].eval_to_buf(ev)?;
     let mut ww = WordWriter::new(out);
     for tok in word_scanner(&text) {
@@ -414,7 +415,7 @@ fn suffix_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) ->
     Ok(())
 }
 
-fn basename_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn basename_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let text = args[0].eval_to_buf(ev)?;
     let mut ww = WordWriter::new(out);
     for tok in word_scanner(&text) {
@@ -423,7 +424,7 @@ fn basename_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) 
     Ok(())
 }
 
-fn addsuffix_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn addsuffix_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let suf = args[0].eval_to_buf(ev)?;
     let text = args[1].eval_to_buf(ev)?;
     let mut ww = WordWriter::new(out);
@@ -434,7 +435,7 @@ fn addsuffix_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut)
     Ok(())
 }
 
-fn addprefix_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn addprefix_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let pre = args[0].eval_to_buf(ev)?;
     let text = args[1].eval_to_buf(ev)?;
     let mut ww = WordWriter::new(out);
@@ -445,7 +446,7 @@ fn addprefix_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut)
     Ok(())
 }
 
-fn realpath_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn realpath_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let text = args[0].eval_to_buf(ev)?;
     if ev.avoid_io {
         out.put_slice(b"$(");
@@ -466,7 +467,7 @@ fn realpath_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) 
     Ok(())
 }
 
-fn abspath_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn abspath_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let text = args[0].eval_to_buf(ev)?;
     let mut ww = WordWriter::new(out);
     for tok in word_scanner(&text) {
@@ -475,7 +476,7 @@ fn abspath_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -
     Ok(())
 }
 
-fn if_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn if_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let cond = args[0].eval_to_buf(ev)?;
     if cond.is_empty() {
         if args.len() > 2 {
@@ -487,7 +488,7 @@ fn if_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Res
     Ok(())
 }
 
-fn and_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn and_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let mut cond = Bytes::new();
     for a in args {
         cond = a.eval_to_buf(ev)?;
@@ -501,7 +502,7 @@ fn and_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Re
     Ok(())
 }
 
-fn or_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn or_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     for a in args {
         let cond = a.eval_to_buf(ev)?;
         if !cond.is_empty() {
@@ -512,7 +513,7 @@ fn or_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Res
     Ok(())
 }
 
-fn value_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn value_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let var_name = args[0].eval_to_buf(ev)?;
     let Some(var) = ev.lookup_var(intern(var_name))? else {
         return Ok(());
@@ -521,7 +522,7 @@ fn value_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> 
     Ok(())
 }
 
-fn eval_func(args: &[Arc<Value>], ev: &mut Evaluator, _out: &mut dyn BufMut) -> Result<()> {
+fn eval_func(args: &[Rc<Value>], ev: &mut Evaluator, _out: &mut dyn BufMut) -> Result<()> {
     let text = args[0].eval_to_buf(ev)?;
     if ev.avoid_io {
         kati_warn_loc!(
@@ -531,7 +532,7 @@ fn eval_func(args: &[Arc<Value>], ev: &mut Evaluator, _out: &mut dyn BufMut) -> 
         );
     }
     let stmts = parse_buf(&text, ev.loc.clone().unwrap_or_default())?;
-    let stmts = stmts.lock();
+    let stmts = stmts.borrow_mut();
     for stmt in stmts.iter() {
         log!("{:?}", stmt);
         stmt.eval(ev)?;
@@ -599,8 +600,9 @@ fn should_store_command_result(cmd: &[u8]) -> bool {
     true
 }
 
-pub static COMMAND_RESULTS: LazyLock<Mutex<Vec<CommandResult>>> =
-    LazyLock::new(|| Mutex::new(Vec::new()));
+thread_local! {
+    pub static COMMAND_RESULTS: RefCell<Vec<CommandResult>> = RefCell::new(Vec::new());
+}
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum CommandOp {
@@ -647,7 +649,7 @@ pub struct CommandResult {
     pub loc: Loc,
 }
 
-fn shell_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn shell_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let cmd = args[0].eval_to_buf(ev)?;
     if ev.avoid_io && !has_no_io_in_shell_script(&cmd) {
         if ev.eval_depth > 1 {
@@ -671,29 +673,27 @@ fn shell_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> 
     let (exit_code, output, fc) = shell_func_impl(&shell, shellflag, &cmd, &loc)?;
     out.put_slice(&output);
     if should_store_command_result(&cmd) {
-        COMMAND_RESULTS.lock().push(CommandResult {
-            op: if fc.is_some() {
-                CommandOp::Find
-            } else {
-                CommandOp::Shell
-            },
-            shell,
-            shellflag: Bytes::from_static(shellflag),
-            cmd,
-            find: fc,
-            result: output,
-            loc,
-        })
+        COMMAND_RESULTS.with_borrow_mut(|crs| {
+            crs.push(CommandResult {
+                op: if fc.is_some() {
+                    CommandOp::Find
+                } else {
+                    CommandOp::Shell
+                },
+                shell,
+                shellflag: Bytes::from_static(shellflag),
+                cmd,
+                find: fc,
+                result: output,
+                loc,
+            })
+        });
     }
     set_shell_status_var(exit_code);
     Ok(())
 }
 
-fn shell_no_rerun_func(
-    args: &[Arc<Value>],
-    ev: &mut Evaluator,
-    out: &mut dyn BufMut,
-) -> Result<()> {
+fn shell_no_rerun_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let cmd = args[0].eval_to_buf(ev)?;
     if ev.avoid_io && !has_no_io_in_shell_script(&cmd) {
         // In the regular ShellFunc, if it sees a $(shell) inside of a rule when in
@@ -716,7 +716,7 @@ fn shell_no_rerun_func(
     Ok(())
 }
 
-fn call_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn call_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let func_name_buf = args[0].eval_to_buf(ev)?;
     let func_name_buf = func_name_buf.slice_ref(trim_space(&func_name_buf));
     let func_sym = intern(func_name_buf.clone());
@@ -778,7 +778,7 @@ fn call_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> R
     Ok(())
 }
 
-fn foreach_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn foreach_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let varname = intern(args[0].eval_to_buf(ev)?);
     let list = args[1].eval_to_buf(ev)?;
     ev.eval_depth -= 1;
@@ -794,7 +794,7 @@ fn foreach_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -
     Ok(())
 }
 
-fn origin_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn origin_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let var_name = args[0].eval_to_buf(ev)?;
     if let Some(var) = ev.lookup_var(intern(var_name))? {
         let orig = var.read().origin();
@@ -805,7 +805,7 @@ fn origin_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) ->
     Ok(())
 }
 
-fn flavor_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn flavor_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let var_name = args[0].eval_to_buf(ev)?;
     if let Some(var) = ev.lookup_var(intern(var_name))? {
         out.put_slice(var.read().flavor().as_bytes());
@@ -815,7 +815,7 @@ fn flavor_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) ->
     Ok(())
 }
 
-fn info_func(args: &[Arc<Value>], ev: &mut Evaluator, _out: &mut dyn BufMut) -> Result<()> {
+fn info_func(args: &[Rc<Value>], ev: &mut Evaluator, _out: &mut dyn BufMut) -> Result<()> {
     let a = args[0].eval_to_buf(ev)?;
     if ev.avoid_io {
         let mut s = BytesMut::new();
@@ -829,7 +829,7 @@ fn info_func(args: &[Arc<Value>], ev: &mut Evaluator, _out: &mut dyn BufMut) -> 
     Ok(())
 }
 
-fn warning_func(args: &[Arc<Value>], ev: &mut Evaluator, _out: &mut dyn BufMut) -> Result<()> {
+fn warning_func(args: &[Rc<Value>], ev: &mut Evaluator, _out: &mut dyn BufMut) -> Result<()> {
     let a = args[0].eval_to_buf(ev)?;
     if ev.avoid_io {
         let mut s = BytesMut::new();
@@ -845,7 +845,7 @@ fn warning_func(args: &[Arc<Value>], ev: &mut Evaluator, _out: &mut dyn BufMut) 
     Ok(())
 }
 
-fn error_func(args: &[Arc<Value>], ev: &mut Evaluator, _out: &mut dyn BufMut) -> Result<()> {
+fn error_func(args: &[Rc<Value>], ev: &mut Evaluator, _out: &mut dyn BufMut) -> Result<()> {
     let a = args[0].eval_to_buf(ev)?;
     if ev.avoid_io {
         let mut s = BytesMut::new();
@@ -868,15 +868,17 @@ fn file_read_func(
 ) -> Result<()> {
     if !std::fs::exists(filename)? {
         if should_store_command_result(filename.as_bytes()) {
-            COMMAND_RESULTS.lock().push(CommandResult {
-                op: CommandOp::ReadMissing,
-                shell: Bytes::new(),
-                shellflag: Bytes::new(),
-                cmd: Bytes::from(filename.as_bytes().to_vec()),
-                find: None,
-                result: Bytes::new(),
-                loc: ev.loc.clone().unwrap_or_default(),
-            })
+            COMMAND_RESULTS.with_borrow_mut(|crs| {
+                crs.push(CommandResult {
+                    op: CommandOp::ReadMissing,
+                    shell: Bytes::new(),
+                    shellflag: Bytes::new(),
+                    cmd: Bytes::from(filename.as_bytes().to_vec()),
+                    find: None,
+                    result: Bytes::new(),
+                    loc: ev.loc.clone().unwrap_or_default(),
+                })
+            });
         }
         return Ok(());
     }
@@ -888,15 +890,17 @@ fn file_read_func(
     let buf = Bytes::from(buf);
 
     if rerun && should_store_command_result(filename.as_bytes()) {
-        COMMAND_RESULTS.lock().push(CommandResult {
-            op: CommandOp::Read,
-            shell: Bytes::new(),
-            shellflag: Bytes::new(),
-            cmd: Bytes::from(filename.as_bytes().to_vec()),
-            find: None,
-            result: buf.clone(),
-            loc: ev.loc.clone().unwrap_or_default(),
-        })
+        COMMAND_RESULTS.with_borrow_mut(|crs| {
+            crs.push(CommandResult {
+                op: CommandOp::Read,
+                shell: Bytes::new(),
+                shellflag: Bytes::new(),
+                cmd: Bytes::from(filename.as_bytes().to_vec()),
+                find: None,
+                result: buf.clone(),
+                loc: ev.loc.clone().unwrap_or_default(),
+            })
+        });
     }
     out.put_slice(&buf);
     Ok(())
@@ -920,22 +924,24 @@ fn file_write_func(
     }
 
     if rerun && should_store_command_result(filename.as_bytes()) {
-        COMMAND_RESULTS.lock().push(CommandResult {
-            op: CommandOp::Write,
-            shell: Bytes::new(),
-            shellflag: Bytes::new(),
-            cmd: Bytes::from(filename.as_bytes().to_vec()),
-            find: None,
-            result: text,
-            loc: ev.loc.clone().unwrap_or_default(),
-        })
+        COMMAND_RESULTS.with_borrow_mut(|crs| {
+            crs.push(CommandResult {
+                op: CommandOp::Write,
+                shell: Bytes::new(),
+                shellflag: Bytes::new(),
+                cmd: Bytes::from(filename.as_bytes().to_vec()),
+                find: None,
+                result: text,
+                loc: ev.loc.clone().unwrap_or_default(),
+            })
+        });
     }
 
     Ok(())
 }
 
 fn file_func_impl(
-    args: &[Arc<Value>],
+    args: &[Rc<Value>],
     ev: &mut Evaluator,
     out: &mut dyn BufMut,
     rerun: bool,
@@ -992,21 +998,21 @@ fn file_func_impl(
     Ok(())
 }
 
-fn file_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn file_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     file_func_impl(args, ev, out, true)
 }
 
-fn file_no_rerun_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn file_no_rerun_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     file_func_impl(args, ev, out, false)
 }
 
 fn deprecated_var_func(
-    args: &[Arc<Value>],
+    args: &[Rc<Value>],
     ev: &mut Evaluator,
     _out: &mut dyn BufMut,
 ) -> Result<()> {
     let vars_str = args[0].eval_to_buf(ev)?;
-    let msg = Arc::new(if let Some(v) = args.get(1) {
+    let msg = Rc::new(if let Some(v) = args.get(1) {
         format!(". {}", String::from_utf8_lossy(&v.eval_to_buf(ev)?))
     } else {
         String::new()
@@ -1050,9 +1056,9 @@ fn deprecated_var_func(
     Ok(())
 }
 
-fn obsolete_var_func(args: &[Arc<Value>], ev: &mut Evaluator, _out: &mut dyn BufMut) -> Result<()> {
+fn obsolete_var_func(args: &[Rc<Value>], ev: &mut Evaluator, _out: &mut dyn BufMut) -> Result<()> {
     let vars_str = args[0].eval_to_buf(ev)?;
-    let msg = Arc::new(if let Some(v) = args.get(1) {
+    let msg = Rc::new(if let Some(v) = args.get(1) {
         format!(". {}", String::from_utf8_lossy(&v.eval_to_buf(ev)?))
     } else {
         String::new()
@@ -1097,7 +1103,7 @@ fn obsolete_var_func(args: &[Arc<Value>], ev: &mut Evaluator, _out: &mut dyn Buf
 }
 
 fn deprecate_export_func(
-    args: &[Arc<Value>],
+    args: &[Rc<Value>],
     ev: &mut Evaluator,
     _out: &mut dyn BufMut,
 ) -> Result<()> {
@@ -1123,7 +1129,7 @@ fn deprecate_export_func(
 }
 
 fn obsolete_export_func(
-    args: &[Arc<Value>],
+    args: &[Rc<Value>],
     ev: &mut Evaluator,
     _out: &mut dyn BufMut,
 ) -> Result<()> {
@@ -1145,7 +1151,7 @@ fn obsolete_export_func(
 }
 
 fn profile_makefile_func(
-    args: &[Arc<Value>],
+    args: &[Rc<Value>],
     ev: &mut Evaluator,
     _out: &mut dyn BufMut,
 ) -> Result<()> {
@@ -1159,7 +1165,7 @@ fn profile_makefile_func(
 }
 
 fn variable_location_func(
-    args: &[Arc<Value>],
+    args: &[Rc<Value>],
     ev: &mut Evaluator,
     out: &mut dyn BufMut,
 ) -> Result<()> {
@@ -1178,7 +1184,7 @@ fn variable_location_func(
 }
 
 fn extra_file_deps_func(
-    args: &[Arc<Value>],
+    args: &[Rc<Value>],
     ev: &mut Evaluator,
     _out: &mut dyn BufMut,
 ) -> Result<()> {
@@ -1199,7 +1205,7 @@ fn extra_file_deps_func(
     Ok(())
 }
 
-fn foreach_sep_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
+fn foreach_sep_func(args: &[Rc<Value>], ev: &mut Evaluator, out: &mut dyn BufMut) -> Result<()> {
     let varname = intern(args[0].eval_to_buf(ev)?);
     let separator = args[1].eval_to_buf(ev)?;
     let list = args[2].eval_to_buf(ev)?;
@@ -1217,7 +1223,7 @@ fn foreach_sep_func(args: &[Arc<Value>], ev: &mut Evaluator, out: &mut dyn BufMu
 }
 
 fn visibility_prefix_func(
-    args: &[Arc<Value>],
+    args: &[Rc<Value>],
     ev: &mut Evaluator,
     _out: &mut dyn BufMut,
 ) -> Result<()> {
@@ -1283,7 +1289,7 @@ fn visibility_prefix_func(
     Ok(())
 }
 
-fn debug_func(args: &[Arc<Value>], ev: &mut Evaluator, _out: &mut dyn BufMut) -> Result<()> {
+fn debug_func(args: &[Rc<Value>], ev: &mut Evaluator, _out: &mut dyn BufMut) -> Result<()> {
     let a = args[0].eval_to_buf(ev)?;
     let loc = ev.loc.clone().unwrap_or_default();
     for tok in word_scanner(&a) {

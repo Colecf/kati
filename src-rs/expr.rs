@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::sync::Arc;
+use std::rc::Rc;
 
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
@@ -65,19 +65,19 @@ pub enum ParseExprOpt {
 #[derive(Debug, PartialEq)]
 pub enum Value {
     Literal(Option<Loc>, Bytes),
-    List(Option<Loc>, Vec<Arc<Value>>),
+    List(Option<Loc>, Vec<Rc<Value>>),
     SymRef(Loc, Symbol),
-    VarRef(Loc, Arc<Value>),
+    VarRef(Loc, Rc<Value>),
     VarSubst {
         loc: Loc,
-        name: Arc<Value>,
-        pat: Arc<Value>,
-        subst: Arc<Value>,
+        name: Rc<Value>,
+        pat: Rc<Value>,
+        subst: Rc<Value>,
     },
     Func {
         loc: Loc,
         fi: &'static FuncInfo,
-        args: Vec<Arc<Value>>,
+        args: Vec<Rc<Value>>,
     },
 }
 
@@ -229,7 +229,7 @@ fn parse_func(
     s: Bytes,
     mut i: usize,
     mut terms: Vec<u8>,
-) -> Result<(usize, Vec<Arc<Value>>)> {
+) -> Result<(usize, Vec<Rc<Value>>)> {
     let start_loc = loc.clone();
     terms.truncate(2);
     terms[1] = b',';
@@ -306,7 +306,7 @@ fn parse_func(
     Ok((i, args))
 }
 
-fn parse_dollar(loc: &mut Loc, s: Bytes, end_paren: bool) -> Result<(usize, Arc<Value>)> {
+fn parse_dollar(loc: &mut Loc, s: Bytes, end_paren: bool) -> Result<(usize, Rc<Value>)> {
     assert!(s.len() >= 2);
     assert!(s.starts_with(b"$"));
     assert!(!s.starts_with(b"$$"));
@@ -316,7 +316,7 @@ fn parse_dollar(loc: &mut Loc, s: Bytes, end_paren: bool) -> Result<(usize, Arc<
     let Some(cp) = close_paren(s[1]) else {
         return Ok((
             2,
-            Arc::new(Value::SymRef(start_loc.clone(), intern(s.slice(1..2)))),
+            Rc::new(Value::SymRef(start_loc.clone(), intern(s.slice(1..2)))),
         ));
     };
 
@@ -341,9 +341,9 @@ fn parse_dollar(loc: &mut Loc, s: Bytes, end_paren: bool) -> Result<(usize, Arc<
                         String::from_utf8_lossy(&s)
                     )
                 }
-                return Ok((i + 1, Arc::new(Value::SymRef(start_loc, sym))));
+                return Ok((i + 1, Rc::new(Value::SymRef(start_loc, sym))));
             }
-            return Ok((i + 1, Arc::new(Value::VarRef(start_loc, vname))));
+            return Ok((i + 1, Rc::new(Value::VarRef(start_loc, vname))));
         }
 
         if t.first() == Some(&b' ') || t.first() == Some(&b'\\') {
@@ -353,7 +353,7 @@ fn parse_dollar(loc: &mut Loc, s: Bytes, end_paren: bool) -> Result<(usize, Arc<
                     let (idx, args) = parse_func(loc, fi, s, i + 1, terms)?;
                     return Ok((
                         idx,
-                        Arc::new(Value::Func {
+                        Rc::new(Value::Func {
                             loc: start_loc,
                             fi,
                             args,
@@ -390,13 +390,13 @@ fn parse_dollar(loc: &mut Loc, s: Bytes, end_paren: bool) -> Result<(usize, Arc<
             if s.get(i) == Some(&cp) {
                 return Ok((
                     i + 1,
-                    Arc::new(Value::VarRef(
+                    Rc::new(Value::VarRef(
                         start_loc.clone(),
-                        Arc::new(Value::List(
+                        Rc::new(Value::List(
                             Some(start_loc),
                             vec![
                                 vname,
-                                Arc::new(Value::Literal(None, Bytes::from_static(b":"))),
+                                Rc::new(Value::Literal(None, Bytes::from_static(b":"))),
                                 pat,
                             ],
                         )),
@@ -415,7 +415,7 @@ fn parse_dollar(loc: &mut Loc, s: Bytes, end_paren: bool) -> Result<(usize, Arc<
             i += 1 + n;
             return Ok((
                 i + 1,
-                Arc::new(Value::VarSubst {
+                Rc::new(Value::VarSubst {
                     loc: start_loc,
                     name: vname,
                     pat,
@@ -434,7 +434,7 @@ fn parse_dollar(loc: &mut Loc, s: Bytes, end_paren: bool) -> Result<(usize, Arc<
             );
             return Ok((
                 s.len(),
-                Arc::new(Value::SymRef(start_loc.clone(), intern(s.slice(2..found)))),
+                Rc::new(Value::SymRef(start_loc.clone(), intern(s.slice(2..found)))),
             ));
         }
 
@@ -448,7 +448,7 @@ pub fn parse_expr_impl(
     terms: Option<&[u8]>,
     opt: ParseExprOpt,
     trim_right_sp: bool,
-) -> Result<(usize, Arc<Value>)> {
+) -> Result<(usize, Rc<Value>)> {
     parse_expr_impl_ext(loc, s, terms, opt, trim_right_sp, false)
 }
 
@@ -460,7 +460,7 @@ pub fn parse_expr_impl_ext(
     trim_right_sp: bool,
     // This is for compatibility with a read-past-end in ckati
     end_paren: bool,
-) -> Result<(usize, Arc<Value>)> {
+) -> Result<(usize, Rc<Value>)> {
     let list_loc = loc.clone();
 
     let s = s.slice_ref(trim_suffix(&s, b"\r"));
@@ -469,7 +469,7 @@ pub fn parse_expr_impl_ext(
     let mut save_paren: Option<u8> = None;
     let mut paren_depth: i32 = 0;
     let mut i = 0usize;
-    let mut list: Vec<Arc<Value>> = Vec::new();
+    let mut list: Vec<Rc<Value>> = Vec::new();
     let mut terms_ignored = 0;
 
     while i < s.len() {
@@ -487,7 +487,7 @@ pub fn parse_expr_impl_ext(
         // Handle a comment
         if terms.is_none() && c == b'#' && should_handle_comments(opt) {
             if i > b {
-                list.push(Arc::new(Value::Literal(None, s.slice(b..i))));
+                list.push(Rc::new(Value::Literal(None, s.slice(b..i))));
             }
             let mut was_backslash = false;
             while i < s.len() && s[i] != b'\n' || was_backslash {
@@ -497,7 +497,7 @@ pub fn parse_expr_impl_ext(
             if list.len() == 1 {
                 return Ok((i, list.pop().unwrap()));
             }
-            return Ok((i, Arc::new(Value::List(Some(item_loc), list))));
+            return Ok((i, Rc::new(Value::List(Some(item_loc), list))));
         }
 
         if c == b'$' {
@@ -506,11 +506,11 @@ pub fn parse_expr_impl_ext(
             }
 
             if i > b {
-                list.push(Arc::new(Value::Literal(None, s.slice(b..i))));
+                list.push(Rc::new(Value::Literal(None, s.slice(b..i))));
             }
 
             if remaining.starts_with(b"$$") {
-                list.push(Arc::new(Value::Literal(None, Bytes::from_static(b"$"))));
+                list.push(Rc::new(Value::Literal(None, Bytes::from_static(b"$"))));
                 i += 2;
                 b = i;
                 continue;
@@ -519,12 +519,12 @@ pub fn parse_expr_impl_ext(
             if let Some(terms) = terms
                 && terms[terms_ignored..].contains(&remaining[1])
             {
-                let val = Arc::new(Value::Literal(None, Bytes::from_static(b"$")));
+                let val = Rc::new(Value::Literal(None, Bytes::from_static(b"$")));
                 if list.is_empty() {
                     return Ok((i + 1, val));
                 }
                 list.push(val);
-                return Ok((i + 1, Arc::new(Value::List(Some(item_loc), list))));
+                return Ok((i + 1, Rc::new(Value::List(Some(item_loc), list))));
             }
 
             let (n, v) = parse_dollar(loc, s.slice(i..), end_paren)?;
@@ -565,7 +565,7 @@ pub fn parse_expr_impl_ext(
                 continue;
             }
             if n == b'#' && should_handle_comments(opt) {
-                list.push(Arc::new(Value::Literal(None, s.slice(b..i))));
+                list.push(Rc::new(Value::Literal(None, s.slice(b..i))));
                 i += 1;
                 b = i;
                 i += 1;
@@ -579,12 +579,12 @@ pub fn parse_expr_impl_ext(
                     break;
                 }
                 if i > b {
-                    list.push(Arc::new(Value::Literal(
+                    list.push(Rc::new(Value::Literal(
                         None,
                         s.slice_ref(trim_right_space(&s[b..i])),
                     )));
                 }
-                list.push(Arc::new(Value::Literal(None, Bytes::from_static(b" "))));
+                list.push(Rc::new(Value::Literal(None, Bytes::from_static(b" "))));
                 // Skip the current escaped newline
                 i += 2;
                 if n == b'\r' && i < s.len() && s[i] == b'\n' {
@@ -617,17 +617,17 @@ pub fn parse_expr_impl_ext(
             rest = trim_right_space(rest);
         }
         if !rest.is_empty() {
-            list.push(Arc::new(Value::Literal(None, s.slice_ref(rest))))
+            list.push(Rc::new(Value::Literal(None, s.slice_ref(rest))))
         }
     }
     if list.len() == 1 {
         Ok((i, list.pop().unwrap()))
     } else {
-        Ok((i, Arc::new(Value::List(Some(list_loc), list))))
+        Ok((i, Rc::new(Value::List(Some(list_loc), list))))
     }
 }
 
-pub fn parse_expr(loc: &mut Loc, s: Bytes, opt: ParseExprOpt) -> Result<Arc<Value>> {
+pub fn parse_expr(loc: &mut Loc, s: Bytes, opt: ParseExprOpt) -> Result<Rc<Value>> {
     let (_i, val) = parse_expr_impl(loc, s, None, opt, false)?;
     Ok(val)
 }
@@ -645,7 +645,7 @@ mod tests {
                 ParseExprOpt::Normal
             )
             .unwrap(),
-            Arc::new(Value::Literal(None, Bytes::from_static(b"foo")))
+            Rc::new(Value::Literal(None, Bytes::from_static(b"foo")))
         );
         assert_eq!(
             parse_expr(
@@ -654,7 +654,7 @@ mod tests {
                 ParseExprOpt::Normal
             )
             .unwrap(),
-            Arc::new(Value::SymRef(Loc::default(), intern("foo")))
+            Rc::new(Value::SymRef(Loc::default(), intern("foo")))
         );
     }
 
@@ -663,17 +663,17 @@ mod tests {
         let s = Bytes::from_static(b"$(eval dst := $$(notdir $$(src)))");
         assert_eq!(
             parse_expr(&mut Loc::default(), s, ParseExprOpt::Define).unwrap(),
-            Arc::new(Value::Func {
+            Rc::new(Value::Func {
                 loc: Loc::default(),
                 fi: get_func_info(b"eval").unwrap(),
-                args: vec![Arc::new(Value::List(
+                args: vec![Rc::new(Value::List(
                     Some(Loc::default()),
                     vec![
-                        Arc::new(Value::Literal(None, Bytes::from_static(b"dst := "))),
-                        Arc::new(Value::Literal(None, Bytes::from_static(b"$"))),
-                        Arc::new(Value::Literal(None, Bytes::from_static(b"(notdir "))),
-                        Arc::new(Value::Literal(None, Bytes::from_static(b"$"))),
-                        Arc::new(Value::Literal(None, Bytes::from_static(b"(src))"))),
+                        Rc::new(Value::Literal(None, Bytes::from_static(b"dst := "))),
+                        Rc::new(Value::Literal(None, Bytes::from_static(b"$"))),
+                        Rc::new(Value::Literal(None, Bytes::from_static(b"(notdir "))),
+                        Rc::new(Value::Literal(None, Bytes::from_static(b"$"))),
+                        Rc::new(Value::Literal(None, Bytes::from_static(b"(src))"))),
                     ]
                 ))],
             })
@@ -684,7 +684,7 @@ mod tests {
     fn test_parse_dollar() {
         assert_eq!(
             parse_dollar(&mut Loc::default(), Bytes::from_static(b"${foo}bar"), false).unwrap(),
-            (6, Arc::new(Value::SymRef(Loc::default(), intern("foo"))))
+            (6, Rc::new(Value::SymRef(Loc::default(), intern("foo"))))
         );
         assert_eq!(
             parse_dollar(
@@ -695,10 +695,10 @@ mod tests {
             .unwrap(),
             (
                 26,
-                Arc::new(Value::Func {
+                Rc::new(Value::Func {
                     loc: Loc::default(),
                     fi: get_func_info(b"info").unwrap(),
-                    args: vec![Arc::new(Value::Literal(
+                    args: vec![Rc::new(Value::Literal(
                         None,
                         Bytes::from_static(b"***   - Re-execute")
                     ))],
@@ -714,10 +714,10 @@ mod tests {
             .unwrap(),
             (
                 53,
-                Arc::new(Value::Func {
+                Rc::new(Value::Func {
                     loc: Loc::default(),
                     fi: get_func_info(b"info").unwrap(),
-                    args: vec![Arc::new(Value::Literal(
+                    args: vec![Rc::new(Value::Literal(
                         None,
                         Bytes::from_static(b"***   - Re-execute envsetup (\". envsetup.sh\")")
                     ))],
@@ -735,12 +735,12 @@ mod tests {
                 ParseExprOpt::Normal
             )
             .unwrap(),
-            Arc::new(Value::Func {
+            Rc::new(Value::Func {
                 loc: Loc::default(),
                 fi: get_func_info(b"call").unwrap(),
                 args: vec![
-                    Arc::new(Value::Literal(None, Bytes::from_static(b"to-lower"))),
-                    Arc::new(Value::SymRef(Loc::default(), intern("upper"))),
+                    Rc::new(Value::Literal(None, Bytes::from_static(b"to-lower"))),
+                    Rc::new(Value::SymRef(Loc::default(), intern("upper"))),
                 ],
             })
         )
@@ -755,17 +755,17 @@ mod tests {
                 ParseExprOpt::Normal
             )
             .unwrap(),
-            Arc::new(Value::Func {
+            Rc::new(Value::Func {
                 loc: Loc::default(),
                 fi: get_func_info(b"subst").unwrap(),
                 args: vec![
-                    Arc::new(Value::SymRef(Loc::default(), intern("space"))),
-                    Arc::new(Value::Literal(None, Bytes::from_static(b"$"))),
-                    Arc::new(Value::List(
+                    Rc::new(Value::SymRef(Loc::default(), intern("space"))),
+                    Rc::new(Value::Literal(None, Bytes::from_static(b"$"))),
+                    Rc::new(Value::List(
                         Some(Loc::default()),
                         vec![
-                            Arc::new(Value::Literal(None, Bytes::from_static(b","))),
-                            Arc::new(Value::SymRef(Loc::default(), intern("foo"))),
+                            Rc::new(Value::Literal(None, Bytes::from_static(b","))),
+                            Rc::new(Value::SymRef(Loc::default(), intern("foo"))),
                         ]
                     )),
                 ],
@@ -802,7 +802,7 @@ mod tests {
                 true
             )
             .unwrap(),
-            (6, Arc::new(Value::SymRef(loc, intern("BAR"))))
+            (6, Rc::new(Value::SymRef(loc, intern("BAR"))))
         );
     }
 }

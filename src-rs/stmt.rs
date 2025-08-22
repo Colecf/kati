@@ -16,8 +16,7 @@ limitations under the License.
 
 use anyhow::Result;
 use bytes::Bytes;
-use parking_lot::Mutex;
-use std::{fmt::Debug, sync::Arc};
+use std::{cell::RefCell, fmt::Debug, rc::Rc};
 
 use crate::{
     error_loc,
@@ -28,7 +27,7 @@ use crate::{
     symtab::{Symbol, intern},
 };
 
-pub type Stmt = Arc<dyn Statement + Send + Sync>;
+pub type Stmt = Rc<dyn Statement>;
 
 pub trait Statement: Debug {
     fn loc(&self) -> Loc;
@@ -71,9 +70,9 @@ pub struct RuleStmt {
     loc: Loc,
     orig: Bytes,
 
-    pub lhs: Arc<Value>,
+    pub lhs: Rc<Value>,
     pub sep: RuleSep,
-    pub rhs: Option<Arc<Value>>,
+    pub rhs: Option<Rc<Value>>,
 }
 
 impl Statement for RuleStmt {
@@ -101,8 +100,8 @@ impl Debug for RuleStmt {
 }
 
 impl RuleStmt {
-    pub fn new(loc: Loc, lhs: Arc<Value>, sep: RuleSep, rhs: Option<Arc<Value>>) -> Arc<RuleStmt> {
-        Arc::new(RuleStmt {
+    pub fn new(loc: Loc, lhs: Rc<Value>, sep: RuleSep, rhs: Option<Rc<Value>>) -> Rc<RuleStmt> {
+        Rc::new(RuleStmt {
             loc,
             orig: Bytes::new(),
             lhs,
@@ -116,14 +115,14 @@ pub struct AssignStmt {
     loc: Loc,
     orig: Bytes,
 
-    pub lhs: Arc<Value>,
-    pub rhs: Arc<Value>,
+    pub lhs: Rc<Value>,
+    pub rhs: Rc<Value>,
     pub orig_rhs: Bytes,
     pub op: AssignOp,
     pub directive: Option<AssignDirective>,
     pub is_final: bool,
 
-    lhs_sym_cache: Mutex<Option<Symbol>>,
+    lhs_sym_cache: RefCell<Option<Symbol>>,
 }
 
 impl Statement for AssignStmt {
@@ -158,14 +157,14 @@ impl Debug for AssignStmt {
 impl AssignStmt {
     pub fn new(
         loc: Loc,
-        lhs: Arc<Value>,
-        rhs: Arc<Value>,
+        lhs: Rc<Value>,
+        rhs: Rc<Value>,
         orig_rhs: Bytes,
         op: AssignOp,
         directive: Option<AssignDirective>,
         is_final: bool,
-    ) -> Arc<AssignStmt> {
-        Arc::new(AssignStmt {
+    ) -> Rc<AssignStmt> {
+        Rc::new(AssignStmt {
             loc,
             orig: Bytes::new(),
             lhs,
@@ -174,7 +173,7 @@ impl AssignStmt {
             op,
             directive,
             is_final,
-            lhs_sym_cache: Mutex::new(None),
+            lhs_sym_cache: RefCell::new(None),
         })
     }
 
@@ -184,7 +183,7 @@ impl AssignStmt {
                 error_loc!(Some(&self.loc), "*** empty variable name.");
             }
 
-            let mut cache = self.lhs_sym_cache.lock();
+            let mut cache = self.lhs_sym_cache.borrow_mut();
             if cache.is_none() {
                 *cache = Some(intern(v.clone()));
             }
@@ -203,7 +202,7 @@ pub struct CommandStmt {
     loc: Loc,
     orig: Bytes,
 
-    pub expr: Arc<Value>,
+    pub expr: Rc<Value>,
 }
 
 impl Statement for CommandStmt {
@@ -225,8 +224,8 @@ impl Debug for CommandStmt {
 }
 
 impl CommandStmt {
-    pub fn new(loc: Loc, orig: Bytes, expr: Arc<Value>) -> Arc<CommandStmt> {
-        Arc::new(CommandStmt { loc, orig, expr })
+    pub fn new(loc: Loc, orig: Bytes, expr: Rc<Value>) -> Rc<CommandStmt> {
+        Rc::new(CommandStmt { loc, orig, expr })
     }
 }
 
@@ -235,10 +234,10 @@ pub struct IfStmt {
     orig: Bytes,
 
     pub op: CondOp,
-    pub lhs: Arc<Value>,
-    pub rhs: Option<Arc<Value>>,
-    pub true_stmts: Arc<Mutex<Vec<Stmt>>>,
-    pub false_stmts: Arc<Mutex<Vec<Stmt>>>,
+    pub lhs: Rc<Value>,
+    pub rhs: Option<Rc<Value>>,
+    pub true_stmts: Rc<RefCell<Vec<Stmt>>>,
+    pub false_stmts: Rc<RefCell<Vec<Stmt>>>,
 }
 
 impl Statement for IfStmt {
@@ -261,23 +260,23 @@ impl Debug for IfStmt {
             self.op,
             self.lhs,
             self.rhs,
-            self.true_stmts.lock().len(),
-            self.false_stmts.lock().len(),
+            self.true_stmts.borrow_mut().len(),
+            self.false_stmts.borrow_mut().len(),
             self.loc
         )
     }
 }
 
 impl IfStmt {
-    pub fn new(loc: Loc, op: CondOp, lhs: Arc<Value>, rhs: Option<Arc<Value>>) -> Arc<IfStmt> {
-        Arc::new(IfStmt {
+    pub fn new(loc: Loc, op: CondOp, lhs: Rc<Value>, rhs: Option<Rc<Value>>) -> Rc<IfStmt> {
+        Rc::new(IfStmt {
             loc,
             orig: Bytes::new(),
             op,
             lhs,
             rhs,
-            true_stmts: Arc::new(Mutex::new(Vec::new())),
-            false_stmts: Arc::new(Mutex::new(Vec::new())),
+            true_stmts: Rc::new(RefCell::new(Vec::new())),
+            false_stmts: Rc::new(RefCell::new(Vec::new())),
         })
     }
 }
@@ -286,7 +285,7 @@ pub struct IncludeStmt {
     loc: Loc,
     orig: Bytes,
 
-    pub expr: Arc<Value>,
+    pub expr: Rc<Value>,
     pub should_exist: bool,
 }
 
@@ -309,8 +308,8 @@ impl Debug for IncludeStmt {
 }
 
 impl IncludeStmt {
-    pub fn new(loc: Loc, expr: Arc<Value>, should_exist: bool) -> Arc<IncludeStmt> {
-        Arc::new(IncludeStmt {
+    pub fn new(loc: Loc, expr: Rc<Value>, should_exist: bool) -> Rc<IncludeStmt> {
+        Rc::new(IncludeStmt {
             loc,
             orig: Bytes::new(),
             expr,
@@ -323,7 +322,7 @@ pub struct ExportStmt {
     loc: Loc,
     orig: Bytes,
 
-    pub expr: Arc<Value>,
+    pub expr: Rc<Value>,
     pub is_export: bool,
 }
 
@@ -350,8 +349,8 @@ impl Debug for ExportStmt {
 }
 
 impl ExportStmt {
-    pub fn new(loc: Loc, expr: Arc<Value>, is_export: bool) -> Arc<ExportStmt> {
-        Arc::new(ExportStmt {
+    pub fn new(loc: Loc, expr: Rc<Value>, is_export: bool) -> Rc<ExportStmt> {
+        Rc::new(ExportStmt {
             loc,
             orig: Bytes::new(),
             expr,

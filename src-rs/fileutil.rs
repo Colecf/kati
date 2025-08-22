@@ -16,19 +16,19 @@ limitations under the License.
 
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
+use std::rc::Rc;
 use std::{
     collections::HashMap,
     ffi::{CStr, CString, OsStr},
     process::{Command, ExitStatus},
     slice,
-    sync::{Arc, LazyLock},
     time::SystemTime,
 };
 
 use anyhow::Result;
 use bytes::{BufMut, Bytes, BytesMut};
 use memchr::memchr2;
-use parking_lot::Mutex;
+use std::cell::RefCell;
 
 use crate::log;
 
@@ -109,28 +109,33 @@ pub fn run_command(
     Ok((res, output))
 }
 
-pub type GlobResults = Arc<Result<Vec<Bytes>, std::io::Error>>;
+pub type GlobResults = Rc<Result<Vec<Bytes>, std::io::Error>>;
 
-pub static GLOB_CACHE: LazyLock<Mutex<HashMap<Bytes, GlobResults>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+thread_local! {
+    pub static GLOB_CACHE: RefCell<HashMap<Bytes, GlobResults>> = RefCell::new(HashMap::new());
+}
 
 pub fn glob(pat: Bytes) -> GlobResults {
-    let mut cache = GLOB_CACHE.lock();
-    if let Some(entry) = cache.get(&pat) {
-        return entry.clone();
-    }
-    let glob = Arc::new(
-        if pat.contains(&b'?') || pat.contains(&b'*') || pat.contains(&b'[') || pat.contains(&b'\\')
-        {
-            libc_glob(&pat)
-        } else if let Err(err) = std::fs::metadata(<OsStr as OsStrExt>::from_bytes(&pat)) {
-            Err(err)
-        } else {
-            Ok(vec![pat.clone()])
-        },
-    );
-    cache.insert(pat, glob.clone());
-    glob
+    GLOB_CACHE.with_borrow_mut(|cache| {
+        if let Some(entry) = cache.get(&pat) {
+            return entry.clone();
+        }
+        let glob = Rc::new(
+            if pat.contains(&b'?')
+                || pat.contains(&b'*')
+                || pat.contains(&b'[')
+                || pat.contains(&b'\\')
+            {
+                libc_glob(&pat)
+            } else if let Err(err) = std::fs::metadata(<OsStr as OsStrExt>::from_bytes(&pat)) {
+                Err(err)
+            } else {
+                Ok(vec![pat.clone()])
+            },
+        );
+        cache.insert(pat, glob.clone());
+        glob
+    })
 }
 
 // Use libc glob over the `glob` crate, to maintain compatibility.
@@ -181,5 +186,5 @@ pub fn fnmatch(pattern: &CString, string: &[u8], flags: i32) -> bool {
 }
 
 pub fn clear_glob_cache() {
-    GLOB_CACHE.lock().clear();
+    GLOB_CACHE.with_borrow_mut(|cache| cache.clear());
 }

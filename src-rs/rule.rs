@@ -15,7 +15,7 @@ limitations under the License.
 */
 
 use std::fmt::Debug;
-use std::sync::Arc;
+use std::rc::Rc;
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -37,7 +37,7 @@ pub struct Rule {
     pub validations: Vec<Symbol>,
     pub is_double_colon: bool,
     pub is_suffix_rule: bool,
-    pub cmds: Vec<Arc<Value>>,
+    pub cmds: Vec<Rc<Value>>,
     pub loc: Loc,
     pub cmd_loc: Option<Loc>,
 }
@@ -92,7 +92,7 @@ impl Rule {
         {
             assert!(line[separator_pos] == b';');
             let value = line.slice(separator_pos + 1..);
-            self.cmds.push(Arc::new(Value::Literal(None, value)));
+            self.cmds.push(Rc::new(Value::Literal(None, value)));
             prereq_string = line.slice(..separator_pos);
         }
 

@@ -14,9 +14,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::{fmt::Display, sync::LazyLock};
+use std::{cell::LazyCell, fmt::Display};
 
-use crate::symtab::{Symbol, intern};
+use crate::symtab::{Symbol, ThreadLocalHelpers, intern};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Loc {
@@ -30,12 +30,16 @@ impl Display for Loc {
     }
 }
 
-static DEFAULT_FILENAME: LazyLock<Symbol> = LazyLock::new(|| intern("<unknown>"));
+thread_local! {
+    // Needs to be thread-local because it's essentially tied to the lifetime of SYMTAB, which
+    // is also thread-local
+    static DEFAULT_FILENAME: LazyCell<Symbol> = LazyCell::new(|| intern("<unknown>"));
+}
 
 impl Default for Loc {
     fn default() -> Self {
         Loc {
-            filename: *DEFAULT_FILENAME,
+            filename: DEFAULT_FILENAME.get_symbol(),
             line: 0,
         }
     }
