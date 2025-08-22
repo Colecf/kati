@@ -19,14 +19,15 @@ use std::{
     ffi::{CString, OsStr, OsString},
     os::unix::{ffi::OsStrExt, fs::FileTypeExt},
     path::PathBuf,
-    sync::{Arc, LazyLock, OnceLock, Weak, atomic::AtomicUsize},
+    rc::{Rc, Weak},
+    sync::{OnceLock, atomic::AtomicUsize},
 };
 
 use anyhow::Result;
 use bytes::{Buf, Bytes, BytesMut};
 use libc::FNM_PERIOD;
 use memchr::{memchr, memchr3};
-use parking_lot::Mutex;
+use std::cell::RefCell;
 
 use crate::{
     collect_stats, error,
@@ -149,7 +150,7 @@ impl FindCond {
 struct DirentNode {
     base: OsString,
     inner: OnceLock<NodeType>,
-    init_data: Mutex<Option<NodeTypeInitData>>,
+    init_data: RefCell<Option<NodeTypeInitData>>,
 }
 enum NodeType {
     File {
@@ -157,12 +158,12 @@ enum NodeType {
     },
     Dir {
         parent: Option<Weak<DirentNode>>,
-        children: Vec<(OsString, Arc<DirentNode>)>,
+        children: Vec<(OsString, Rc<DirentNode>)>,
     },
     Symlink {
         // If there is a loop (a symlink to .., etc), this may leak. But
         // it's not the end of the world if this doesn't get freed.
-        to: Arc<DirentNode>,
+        to: Rc<DirentNode>,
     },
     SymlinkError {
         err: std::io::Error,
@@ -181,11 +182,11 @@ enum NodeTypeInitData {
     },
 }
 impl DirentNode {
-    fn new() -> Arc<DirentNode> {
-        Arc::new(DirentNode {
+    fn new() -> Rc<DirentNode> {
+        Rc::new(DirentNode {
             base: "".into(),
             inner: OnceLock::new(),
-            init_data: Mutex::new(Some(NodeTypeInitData::Dir {
+            init_data: RefCell::new(Some(NodeTypeInitData::Dir {
                 name: std::env::current_dir().unwrap(),
                 parent: None,
             })),
@@ -209,7 +210,7 @@ impl DirentNode {
         }
         out.push(path.to_vec())
     }
-    fn is_directory(self: &Arc<Self>) -> bool {
+    fn is_directory(self: &Rc<Self>) -> bool {
         match self.inner(true) {
             Some(NodeType::Error {}) => false,
             Some(NodeType::File { .. }) => false,
@@ -220,7 +221,7 @@ impl DirentNode {
             None => false,
         }
     }
-    fn find_dir(self: &Arc<Self>, d: &[u8]) -> Option<Arc<DirentNode>> {
+    fn find_dir(self: &Rc<Self>, d: &[u8]) -> Option<Rc<DirentNode>> {
         match self.inner(true) {
             Some(NodeType::Dir { parent, children }) => {
                 if d.is_empty() || d == b"." {
@@ -260,9 +261,9 @@ impl DirentNode {
         }
     }
     fn find_nodes(
-        self: &Arc<Self>,
+        self: &Rc<Self>,
         fc: &FindCommand,
-        results: &mut Vec<(Vec<u8>, Arc<DirentNode>)>,
+        results: &mut Vec<(Vec<u8>, Rc<DirentNode>)>,
         path: &mut Vec<u8>,
         d: &[u8],
     ) -> bool {
@@ -307,7 +308,7 @@ impl DirentNode {
 
                 let is_wild = memchr3(b'?', b'*', b'[', p).is_some();
                 if is_wild {
-                    let mut v = fc.read_dirs.lock();
+                    let mut v = fc.read_dirs.borrow_mut();
                     v.insert(Bytes::from(path.clone()));
                 }
                 let pattern = if is_wild { CString::new(p).ok() } else { None };
@@ -334,7 +335,7 @@ impl DirentNode {
             }
             Some(NodeType::Symlink { to }) => {
                 if to.is_directory() {
-                    let mut v = fc.read_dirs.lock();
+                    let mut v = fc.read_dirs.borrow_mut();
                     v.insert(Bytes::from(path.clone()));
                 }
                 to.find_nodes(fc, results, path, d)
@@ -347,12 +348,12 @@ impl DirentNode {
         }
     }
     fn run_find(
-        self: &Arc<Self>,
+        self: &Rc<Self>,
         fc: &FindCommand,
         loc: &Loc,
         d: i32,
         path: &mut Vec<u8>,
-        cur_read_dirs: &Arc<Mutex<HashMap<DirentNodeKey, Vec<u8>>>>,
+        cur_read_dirs: &Rc<RefCell<HashMap<DirentNodeKey, Vec<u8>>>>,
         out: &mut Vec<Vec<u8>>,
     ) -> Result<bool> {
         match self.inner(fc.follows_symlink) {
@@ -372,7 +373,7 @@ impl DirentNode {
                     return Ok(true);
                 }
 
-                fc.read_dirs.lock().insert(Bytes::from(path.clone()));
+                fc.read_dirs.borrow_mut().insert(Bytes::from(path.clone()));
 
                 if fc
                     .prune_cond
@@ -417,9 +418,9 @@ impl DirentNode {
                         let print_cond = fc.print_cond.as_ref().unwrap();
                         if print_cond.countable() && print_cond.count() == out.len() - orig_out_size
                         {
-                            fc.read_dirs.lock().remove(&Bytes::from(path.clone()));
+                            fc.read_dirs.borrow_mut().remove(&Bytes::from(path.clone()));
                             let mut i = orig_out_size;
-                            let mut v = fc.found_files.lock();
+                            let mut v = fc.found_files.borrow_mut();
                             while i < out.len() {
                                 v.push(Bytes::from(out[i].clone()));
                                 i += 1;
@@ -488,7 +489,7 @@ impl DirentNode {
         }
     }
 
-    fn inner(self: &Arc<Self>, follows_symlinks: bool) -> Option<&NodeType> {
+    fn inner(self: &Rc<Self>, follows_symlinks: bool) -> Option<&NodeType> {
         if !follows_symlinks {
             if let Some(inner) = self.inner.get() {
                 match inner {
@@ -498,14 +499,14 @@ impl DirentNode {
                     _ => {}
                 }
             } else {
-                let init_data = self.init_data.lock();
+                let init_data = self.init_data.borrow_mut();
                 if let Some(NodeTypeInitData::Symlink { .. }) = init_data.as_ref() {
                     return None;
                 }
             }
         }
         Some(self.inner.get_or_init(|| {
-            let mut init_data = self.init_data.lock();
+            let mut init_data = self.init_data.borrow_mut();
             let Some(init_data) = init_data.take() else {
                 return NodeType::Error {};
             };
@@ -552,7 +553,7 @@ impl DirentNode {
     }
 
     fn initialize_dir(
-        self: &Arc<Self>,
+        self: &Rc<Self>,
         name: PathBuf,
         parent: Option<Weak<DirentNode>>,
     ) -> NodeType {
@@ -594,22 +595,22 @@ impl DirentNode {
             let base = OsStr::from_bytes(basename(path.as_os_str().as_bytes())).to_os_string();
             children.push((
                 base.clone(),
-                Arc::new(if typ.is_dir() {
+                Rc::new(if typ.is_dir() {
                     DirentNode {
                         base,
                         inner: OnceLock::new(),
-                        init_data: Mutex::new(Some(NodeTypeInitData::Dir {
+                        init_data: RefCell::new(Some(NodeTypeInitData::Dir {
                             name: path,
-                            parent: Some(Arc::downgrade(self)),
+                            parent: Some(Rc::downgrade(self)),
                         })),
                     }
                 } else if typ.is_symlink() {
                     DirentNode {
                         base,
                         inner: OnceLock::new(),
-                        init_data: Mutex::new(Some(NodeTypeInitData::Symlink {
+                        init_data: RefCell::new(Some(NodeTypeInitData::Symlink {
                             name: path,
-                            parent: Arc::downgrade(self),
+                            parent: Rc::downgrade(self),
                         })),
                     }
                 } else {
@@ -620,7 +621,7 @@ impl DirentNode {
                     DirentNode {
                         base,
                         inner,
-                        init_data: Mutex::new(None),
+                        init_data: RefCell::new(None),
                     }
                 }),
             ))
@@ -631,37 +632,37 @@ impl DirentNode {
     }
 }
 
-struct DirentNodeKey(Arc<DirentNode>);
+struct DirentNodeKey(Rc<DirentNode>);
 
 impl std::hash::Hash for DirentNodeKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.0).hash(state)
+        Rc::as_ptr(&self.0).hash(state)
     }
 }
 impl PartialEq for DirentNodeKey {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        Rc::ptr_eq(&self.0, &other.0)
     }
 }
 impl Eq for DirentNodeKey {}
 
 struct ScopedReadDirTracker {
     conflicted: Option<Vec<u8>>,
-    n: Option<Arc<DirentNode>>,
-    cur_read_dirs: Arc<Mutex<HashMap<DirentNodeKey, Vec<u8>>>>,
+    n: Option<Rc<DirentNode>>,
+    cur_read_dirs: Rc<RefCell<HashMap<DirentNodeKey, Vec<u8>>>>,
 }
 
 impl ScopedReadDirTracker {
     fn new(
-        node: &Arc<DirentNode>,
+        node: &Rc<DirentNode>,
         path: &[u8],
-        cur_read_dirs: &Arc<Mutex<HashMap<DirentNodeKey, Vec<u8>>>>,
+        cur_read_dirs: &Rc<RefCell<HashMap<DirentNodeKey, Vec<u8>>>>,
     ) -> Self {
         let mut conflicted = None;
         let mut n = None;
         let key = DirentNodeKey(node.clone());
         {
-            let mut dirs = cur_read_dirs.lock();
+            let mut dirs = cur_read_dirs.borrow_mut();
             if let Some(old) = dirs.get(&key) {
                 conflicted = Some(old.clone());
             } else {
@@ -680,7 +681,9 @@ impl ScopedReadDirTracker {
 impl Drop for ScopedReadDirTracker {
     fn drop(&mut self) {
         if let Some(n) = &self.n {
-            self.cur_read_dirs.lock().remove(&DirentNodeKey(n.clone()));
+            self.cur_read_dirs
+                .borrow_mut()
+                .remove(&DirentNodeKey(n.clone()));
         }
     }
 }
@@ -1126,7 +1129,7 @@ impl FindCommandParser {
 }
 
 pub struct FindEmulator {
-    root: Arc<DirentNode>,
+    root: Rc<DirentNode>,
 }
 
 impl FindEmulator {
@@ -1140,7 +1143,7 @@ impl FindEmulator {
         !s.starts_with(b"/") && !s.starts_with(b".repo") && !s.starts_with(b".git")
     }
 
-    fn find_dir(&self, d: &[u8], should_fallback: &mut bool) -> Option<Arc<DirentNode>> {
+    fn find_dir(&self, d: &[u8], should_fallback: &mut bool) -> Option<Rc<DirentNode>> {
         let r = self.root.find_dir(d);
         if r.is_none() {
             *should_fallback = std::fs::exists(OsStr::from_bytes(d)).unwrap_or(false);
@@ -1230,7 +1233,7 @@ impl FindEmulator {
             bases.sort_by(|a, b| a.0.cmp(&b.0));
 
             for (mut path, base) in bases {
-                let cur_read_dirs = Arc::new(Mutex::new(HashMap::new()));
+                let cur_read_dirs = Rc::new(RefCell::new(HashMap::new()));
                 if !base.run_find(fc, loc, 0, &mut path, &cur_read_dirs, &mut results)? {
                     log!(
                         "FindEmulator: RunFind failed: {}",
@@ -1277,8 +1280,8 @@ pub struct FindCommand {
     mindepth: i32,
     redirect_to_devnull: bool,
 
-    pub found_files: Mutex<Vec<Bytes>>,
-    pub read_dirs: Mutex<HashSet<Bytes>>,
+    pub found_files: RefCell<Vec<Bytes>>,
+    pub read_dirs: RefCell<HashSet<Bytes>>,
 }
 
 impl Default for FindCommand {
@@ -1295,8 +1298,8 @@ impl Default for FindCommand {
             mindepth: i32::MIN,
             redirect_to_devnull: false,
 
-            found_files: Mutex::new(Vec::new()),
-            read_dirs: Mutex::new(HashSet::new()),
+            found_files: RefCell::new(Vec::new()),
+            read_dirs: RefCell::new(HashSet::new()),
         }
     }
 }
@@ -1349,11 +1352,13 @@ pub fn parse(cmd: &Bytes) -> Result<Option<FindCommand>> {
     FindCommand::with_cmd(cmd)
 }
 
-static FIND_EMULATOR: LazyLock<FindEmulator> = LazyLock::new(FindEmulator::new);
+thread_local! {
+    static FIND_EMULATOR: RefCell<FindEmulator> = RefCell::new(FindEmulator::new());
+}
 
 pub fn find(cmd: &Bytes, fc: &FindCommand, loc: &Loc) -> Result<Option<Bytes>> {
     let mut out = BytesMut::new();
-    if !FIND_EMULATOR.handle_find(cmd, fc, loc, &mut out)? {
+    if !FIND_EMULATOR.with_borrow(|x| x.handle_find(cmd, fc, loc, &mut out))? {
         return Ok(None);
     }
     Ok(Some(out.freeze()))

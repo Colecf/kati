@@ -14,11 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::{collections::HashMap, ffi::OsStr, os::unix::ffi::OsStrExt, sync::Arc, time::SystemTime};
+use std::rc::Rc;
+use std::{collections::HashMap, ffi::OsStr, os::unix::ffi::OsStrExt, time::SystemTime};
 
 use anyhow::Result;
 use bytes::Bytes;
-use parking_lot::Mutex;
+use std::cell::RefCell;
 
 use crate::{
     command::CommandEvaluator,
@@ -79,10 +80,10 @@ impl<'a> Executor<'a> {
 
     fn exec_node(
         &mut self,
-        n: &Arc<Mutex<DepNode>>,
+        n: &Rc<RefCell<DepNode>>,
         needed_by: Option<&[u8]>,
     ) -> Result<ExecStatus> {
-        let output = n.lock().output;
+        let output = n.borrow_mut().output;
         let output_str = output.as_bytes();
         if let Some(found) = self.done.get(&output) {
             if found == &ExecStatus::Processing {
@@ -94,7 +95,7 @@ impl<'a> Executor<'a> {
             }
             return Ok(*found);
         }
-        let loc = n.lock().loc.clone();
+        let loc = n.borrow_mut().loc.clone();
         let _frame = self
             .ce
             .ev
@@ -109,7 +110,7 @@ impl<'a> Executor<'a> {
             String::from_utf8_lossy(needed_by.unwrap_or(b"(null)"))
         );
 
-        if !n.lock().has_rule && output_timestamp.is_none() && !n.lock().is_phony {
+        if !n.borrow_mut().has_rule && output_timestamp.is_none() && !n.borrow_mut().is_phony {
             if let Some(needed_by) = needed_by {
                 error!(
                     "*** No rule to make target '{output}', needed by '{}'.",
@@ -121,9 +122,9 @@ impl<'a> Executor<'a> {
         }
 
         let mut latest = ExecStatus::Processing;
-        let order_onlys = n.lock().order_onlys.clone();
+        let order_onlys = n.borrow_mut().order_onlys.clone();
         for (_, d) in order_onlys {
-            let dep_out = d.lock().output.as_bytes();
+            let dep_out = d.borrow_mut().output.as_bytes();
             if std::fs::exists(OsStr::from_bytes(&dep_out))? {
                 continue;
             }
@@ -133,7 +134,7 @@ impl<'a> Executor<'a> {
             }
         }
 
-        let deps = n.lock().deps.clone();
+        let deps = n.borrow_mut().deps.clone();
         for (_, d) in deps {
             let ts = self.exec_node(&d, Some(&output_str))?;
             if latest < ts {
@@ -141,7 +142,7 @@ impl<'a> Executor<'a> {
             }
         }
 
-        if output_ts >= latest && !n.lock().is_phony {
+        if output_ts >= latest && !n.borrow_mut().is_phony {
             self.done.insert(output, output_ts);
             return Ok(output_ts);
         }

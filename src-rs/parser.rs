@@ -14,12 +14,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-use std::sync::Arc;
+use std::{cell::RefCell, rc::Rc};
 
 use anyhow::Result;
 use bytes::{Buf, Bytes};
 use memchr::{memchr, memchr3};
-use parking_lot::Mutex;
 
 use crate::{
     collect_stats, error_loc,
@@ -37,7 +36,7 @@ use crate::{
 };
 
 struct IfState {
-    stmt: Arc<IfStmt>,
+    stmt: Rc<IfStmt>,
     is_in_else: bool,
     num_nest: i32,
 }
@@ -50,8 +49,8 @@ struct Parser {
     // a rule, see testcase/rule_in_var.mk.
     after_rule: bool,
 
-    stmts: Arc<Mutex<Vec<Stmt>>>,
-    out_stmts: Arc<Mutex<Vec<Stmt>>>,
+    stmts: Rc<RefCell<Vec<Stmt>>>,
+    out_stmts: Rc<RefCell<Vec<Stmt>>>,
 
     define_name: Option<Bytes>,
     num_define_nest: i32,
@@ -69,7 +68,7 @@ struct Parser {
 }
 
 impl Parser {
-    fn with_buf(buf: &Bytes, loc: Loc, stmts: Arc<Mutex<Vec<Stmt>>>, fixed_lineno: bool) -> Self {
+    fn with_buf(buf: &Bytes, loc: Loc, stmts: Rc<RefCell<Vec<Stmt>>>, fixed_lineno: bool) -> Self {
         Self {
             buf: buf.clone(),
             l: 0,
@@ -149,7 +148,7 @@ impl Parser {
             let mut mutable_loc = self.loc.clone();
             let expr = parse_expr(&mut mutable_loc, line.slice(1..), ParseExprOpt::Command)?;
             self.out_stmts
-                .lock()
+                .borrow_mut()
                 .push(CommandStmt::new(loc, line, expr));
             return Ok(());
         }
@@ -210,9 +209,9 @@ impl Parser {
         }
 
         let rule_loc = self.loc.clone();
-        let rule_lhs: Arc<Value>;
+        let rule_lhs: Rc<Value>;
         let mut rule_sep = RuleSep::Null;
-        let rule_rhs: Option<Arc<Value>>;
+        let rule_rhs: Option<Rc<Value>>;
 
         let sep_plus_one = sep.map(|sep| sep + 1).unwrap_or(0);
 
@@ -248,7 +247,7 @@ impl Parser {
         }
         self.after_rule = true;
         self.out_stmts
-            .lock()
+            .borrow_mut()
             .push(RuleStmt::new(rule_loc, rule_lhs, rule_sep, rule_rhs));
         Ok(())
     }
@@ -280,7 +279,7 @@ impl Parser {
         let rhs = parse_expr(&mut mutable_loc, orig_rhs.clone(), ParseExprOpt::Normal)?;
 
         self.after_rule = false;
-        self.out_stmts.lock().push(AssignStmt::new(
+        self.out_stmts.borrow_mut().push(AssignStmt::new(
             assign_loc,
             lhs,
             rhs,
@@ -297,7 +296,7 @@ impl Parser {
         let mut mutable_loc = loc.clone();
         let expr = parse_expr(&mut mutable_loc, line, ParseExprOpt::Normal)?;
         self.out_stmts
-            .lock()
+            .borrow_mut()
             .push(IncludeStmt::new(loc, expr, directive.starts_with(b"i")));
         self.after_rule = false;
         Ok(())
@@ -355,7 +354,7 @@ impl Parser {
         };
         let rhs = parse_expr(&mut mutable_loc, orig_rhs.clone(), ParseExprOpt::Define)?;
 
-        self.out_stmts.lock().push(AssignStmt::new(
+        self.out_stmts.borrow_mut().push(AssignStmt::new(
             assign_loc,
             lhs,
             rhs,
@@ -368,7 +367,7 @@ impl Parser {
         Ok(())
     }
 
-    fn enter_if(&mut self, stmt: Arc<IfStmt>) {
+    fn enter_if(&mut self, stmt: Rc<IfStmt>) {
         self.if_stack.push(IfState {
             stmt: stmt.clone(),
             is_in_else: false,
@@ -387,7 +386,7 @@ impl Parser {
         let mut mutable_loc = loc.clone();
         let lhs = parse_expr(&mut mutable_loc, line, ParseExprOpt::Normal)?;
         let stmt = IfStmt::new(loc, op, lhs, None);
-        self.out_stmts.lock().push(stmt.clone());
+        self.out_stmts.borrow_mut().push(stmt.clone());
         self.enter_if(stmt);
         Ok(())
     }
@@ -474,7 +473,7 @@ impl Parser {
         }
 
         let stmt = IfStmt::new(loc, op, lhs, Some(rhs));
-        self.out_stmts.lock().push(stmt.clone());
+        self.out_stmts.borrow_mut().push(stmt.clone());
         self.enter_if(stmt);
         Ok(())
     }
@@ -531,7 +530,7 @@ impl Parser {
         let mut mutable_loc = loc.clone();
         let expr = parse_expr(&mut mutable_loc, line.clone(), ParseExprOpt::Normal)?;
         self.out_stmts
-            .lock()
+            .borrow_mut()
             .push(ExportStmt::new(loc, expr, is_export));
         Ok(())
     }
@@ -637,18 +636,18 @@ impl Parser {
     }
 }
 
-pub fn parse_file(buf: &Bytes, filename: Symbol) -> Result<Arc<Mutex<Vec<Stmt>>>> {
+pub fn parse_file(buf: &Bytes, filename: Symbol) -> Result<Rc<RefCell<Vec<Stmt>>>> {
     collect_stats!("parse file time");
     let loc = Loc { filename, line: 0 };
     parse_buf_no_stats_impl(buf, loc, false)
 }
 
-pub fn parse_buf(buf: &Bytes, loc: Loc) -> Result<Arc<Mutex<Vec<Stmt>>>> {
+pub fn parse_buf(buf: &Bytes, loc: Loc) -> Result<Rc<RefCell<Vec<Stmt>>>> {
     collect_stats!("parse eval time");
     parse_buf_no_stats_impl(buf, loc, true)
 }
 
-pub fn parse_buf_no_stats(buf: &Bytes, loc: Loc) -> Result<Arc<Mutex<Vec<Stmt>>>> {
+pub fn parse_buf_no_stats(buf: &Bytes, loc: Loc) -> Result<Rc<RefCell<Vec<Stmt>>>> {
     parse_buf_no_stats_impl(buf, loc, true)
 }
 
@@ -656,8 +655,8 @@ fn parse_buf_no_stats_impl(
     buf: &Bytes,
     loc: Loc,
     fixed_lineno: bool,
-) -> Result<Arc<Mutex<Vec<Stmt>>>> {
-    let stmts = Arc::new(Mutex::new(Vec::new()));
+) -> Result<Rc<RefCell<Vec<Stmt>>>> {
+    let stmts = Rc::new(RefCell::new(Vec::new()));
     let mut p = Parser::with_buf(buf, loc, stmts.clone(), fixed_lineno);
     p.parse()?;
     Ok(stmts)
