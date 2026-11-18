@@ -518,7 +518,7 @@ impl Parser {
             } else {
                 stmt.true_stmts = in_progress_stmts;
             }
-            self.push_stmt(Arc::new(stmt));
+            self.push_stmt(Stmt::If(stmt));
         }
         Ok(())
     }

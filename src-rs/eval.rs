@@ -35,7 +35,6 @@ use crate::parser::{parse_assign_statement, parse_buf_no_stats};
 use crate::rule::{Rule, is_pattern_rule};
 use crate::stmt::{
     AssignOp, AssignStmt, CommandStmt, CondOp, ExportStmt, IfStmt, IncludeStmt, RuleSep, RuleStmt,
-    Statement,
 };
 use crate::strutil::{is_space_byte, trim_leading_curdir, trim_right_space, word_scanner};
 use crate::symtab::{ALLOW_RULES_SYM, KATI_READONLY_SYM, MAKEFILE_LIST, SHELL_SYM, Symbol, intern};
